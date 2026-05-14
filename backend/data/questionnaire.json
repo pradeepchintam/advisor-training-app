@@ -1,0 +1,200 @@
+{
+  "version": "1.0",
+  "title": "Wealth Management Client Discovery Script",
+  "description": "Topics and questions the simulated client will raise during the meeting",
+  "categories": [
+    {
+      "id": "cat_intro",
+      "name": "Introduction & Background",
+      "topics": [
+        {
+          "id": "t1_1",
+          "topic": "Ask about the advisor's credentials and how long they've been with the firm",
+          "importance": "high"
+        },
+        {
+          "id": "t1_2",
+          "topic": "Mention why they're seeking financial advice now (life event or concern)",
+          "importance": "high"
+        },
+        {
+          "id": "t1_3",
+          "topic": "Ask how the advisor is compensated and if they are truly a fiduciary",
+          "importance": "critical"
+        }
+      ]
+    },
+    {
+      "id": "cat_financial_overview",
+      "name": "Financial Situation Overview",
+      "topics": [
+        {
+          "id": "t2_1",
+          "topic": "Share current income situation and ask if it's enough to meet goals",
+          "importance": "high"
+        },
+        {
+          "id": "t2_2",
+          "topic": "Mention existing savings/investments and ask if they're in the right place",
+          "importance": "high"
+        },
+        {
+          "id": "t2_3",
+          "topic": "Ask about emergency fund adequacy",
+          "importance": "medium"
+        },
+        {
+          "id": "t2_4",
+          "topic": "Discuss any significant debts and whether to pay them off vs invest",
+          "importance": "high"
+        }
+      ]
+    },
+    {
+      "id": "cat_retirement",
+      "name": "Retirement Planning",
+      "topics": [
+        {
+          "id": "t3_1",
+          "topic": "Ask when they want to retire and what that looks like",
+          "importance": "high"
+        },
+        {
+          "id": "t3_2",
+          "topic": "Discuss current retirement accounts (401k, IRA) and ask if they're optimized",
+          "importance": "high"
+        },
+        {
+          "id": "t3_3",
+          "topic": "Ask about Social Security and when to start collecting",
+          "importance": "medium"
+        },
+        {
+          "id": "t3_4",
+          "topic": "Raise concern about outliving retirement savings",
+          "importance": "high"
+        }
+      ]
+    },
+    {
+      "id": "cat_investments",
+      "name": "Investment Strategy",
+      "topics": [
+        {
+          "id": "t4_1",
+          "topic": "Ask about current investment portfolio and if it matches risk tolerance",
+          "importance": "high"
+        },
+        {
+          "id": "t4_2",
+          "topic": "Express confusion/concern about market volatility",
+          "importance": "medium"
+        },
+        {
+          "id": "t4_3",
+          "topic": "Ask about alternative investments (real estate, private equity, etc.)",
+          "importance": "medium"
+        },
+        {
+          "id": "t4_4",
+          "topic": "Inquire about investment fees and how to minimize them",
+          "importance": "high"
+        }
+      ]
+    },
+    {
+      "id": "cat_tax",
+      "name": "Tax Planning",
+      "topics": [
+        {
+          "id": "t5_1",
+          "topic": "Ask about tax-efficient investing strategies",
+          "importance": "high"
+        },
+        {
+          "id": "t5_2",
+          "topic": "Discuss Roth vs Traditional IRA conversion considerations",
+          "importance": "medium"
+        },
+        {
+          "id": "t5_3",
+          "topic": "Ask about capital gains and tax-loss harvesting",
+          "importance": "medium"
+        }
+      ]
+    },
+    {
+      "id": "cat_protection",
+      "name": "Risk & Protection",
+      "topics": [
+        {
+          "id": "t6_1",
+          "topic": "Ask about life insurance needs and whether current coverage is adequate",
+          "importance": "high"
+        },
+        {
+          "id": "t6_2",
+          "topic": "Raise concern about long-term care costs",
+          "importance": "medium"
+        },
+        {
+          "id": "t6_3",
+          "topic": "Ask about disability insurance",
+          "importance": "medium"
+        }
+      ]
+    },
+    {
+      "id": "cat_estate",
+      "name": "Estate & Legacy Planning",
+      "topics": [
+        {
+          "id": "t7_1",
+          "topic": "Ask about having a will and whether it needs updating",
+          "importance": "high"
+        },
+        {
+          "id": "t7_2",
+          "topic": "Discuss beneficiary designations and whether they're current",
+          "importance": "high"
+        },
+        {
+          "id": "t7_3",
+          "topic": "Raise question about leaving money to children/grandchildren",
+          "importance": "medium"
+        },
+        {
+          "id": "t7_4",
+          "topic": "Ask about charitable giving strategies if applicable",
+          "importance": "low"
+        }
+      ]
+    },
+    {
+      "id": "cat_closing",
+      "name": "Next Steps & Trust Building",
+      "topics": [
+        {
+          "id": "t8_1",
+          "topic": "Ask what the advisor recommends as immediate next steps",
+          "importance": "high"
+        },
+        {
+          "id": "t8_2",
+          "topic": "Ask how often they would meet and how accessible the advisor is",
+          "importance": "medium"
+        },
+        {
+          "id": "t8_3",
+          "topic": "Express concern about trusting someone with their money",
+          "importance": "high"
+        },
+        {
+          "id": "t8_4",
+          "topic": "Ask about minimum investment requirements",
+          "importance": "medium"
+        }
+      ]
+    }
+  ]
+}
