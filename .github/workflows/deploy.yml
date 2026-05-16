@@ -27,5 +27,5 @@ jobs:
             BRANCH=${{ github.ref_name }}
             git fetch --depth=1 origin "$BRANCH"
             git reset --hard "origin/$BRANCH"
-            cd advisor-training-app/deploy
+            cd deploy
             ./deploy.sh
