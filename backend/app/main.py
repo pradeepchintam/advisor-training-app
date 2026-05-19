@@ -11,6 +11,9 @@ from app.routers.auth_router import router as auth_router
 from app.routers.advisors_router import router as advisors_router
 from app.routers.sessions_router import router as sessions_router
 from app.routers.questionnaire_router import router as questionnaire_router
+from app.routers.presentations_router import router as presentations_router
+from app.routers.scripts_router import router as scripts_router
+from app.routers.tts_router import router as tts_router
 
 app = FastAPI(
     title="Trajan Wealth Advisor Trainer",
@@ -37,6 +40,9 @@ app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(advisors_router, prefix="/api/advisors", tags=["advisors"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(questionnaire_router, prefix="/api/questionnaire", tags=["questionnaire"])
+app.include_router(presentations_router, prefix="/api/presentations", tags=["presentations"])
+app.include_router(scripts_router, prefix="/api/scripts", tags=["scripts"])
+app.include_router(tts_router, prefix="/api/tts", tags=["tts"])
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +72,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                   or: {"type": "error", "message": "..."}
     """
     from app.auth import decode_token
-    from app.models import Questionnaire, TrainingSession, User
+    from app.models import Presentation, Questionnaire, TrainingSession, User
     from app.schemas import ClientPersona, WSMessage
     from app.services.claude_service import simulate_client_response
     import json
@@ -125,6 +131,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
 
         persona = ClientPersona(**session.persona)
         conversation: list[dict] = list(session.conversation or [])
+        slide_events: list[dict] = list(session.slide_events or [])
+
+        # Pull active presentation (advisor session uses this — may be missing)
+        pres_result = await db.execute(
+            select(Presentation).where(Presentation.is_active == True)
+        )
+        active_presentation = pres_result.scalar_one_or_none()
 
         # Send welcome message
         await websocket.send_json({
@@ -132,6 +145,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
             "message": f"Connected to session with {persona.name}",
             "client_name": persona.name,
             "client_image_url": session.client_image_url,
+            "presentation": (
+                {
+                    "id": active_presentation.id,
+                    "title": active_presentation.title,
+                    "slide_count": active_presentation.slide_count,
+                }
+                if active_presentation
+                else None
+            ),
         })
 
         try:
@@ -148,9 +170,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                     session.status = "completed"
                     session.ended_at = datetime.now(timezone.utc)
                     session.conversation = conversation
+                    session.slide_events = slide_events
                     await db.commit()
                     await websocket.send_json({"type": "session_ended"})
                     break
+
+                if msg.type == "advisor_slide_change":
+                    slide_num = data.get("slide_number")
+                    if not isinstance(slide_num, int) or slide_num < 1:
+                        await websocket.send_json({"type": "error", "message": "Invalid slide_number"})
+                        continue
+                    slide_events.append({
+                        "slide_number": slide_num,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                    session.slide_events = list(slide_events)
+                    await db.commit()
+                    # Echo for client confirmation
+                    await websocket.send_json({"type": "slide_changed", "slide_number": slide_num})
+                    continue
 
                 if msg.type == "advisor_message":
                     if not msg.text or not msg.text.strip():
@@ -199,6 +237,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                 session.status = "completed"
                 session.ended_at = datetime.now(timezone.utc)
                 session.conversation = conversation
+                session.slide_events = slide_events
                 await db.commit()
 
 

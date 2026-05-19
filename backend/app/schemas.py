@@ -47,6 +47,7 @@ class UserUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     is_active: Optional[bool] = None
+    password: Optional[str] = None  # if set, replaces the hashed password
 
 
 class UserWithSessionCount(UserPublic):
@@ -200,6 +201,43 @@ class QuestionnairePublic(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Presentation (PPT)
+# ---------------------------------------------------------------------------
+
+class PresentationPublic(BaseModel):
+    id: str
+    version: int
+    title: str
+    slide_count: int
+    is_active: bool
+    uploaded_by: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Training script
+# ---------------------------------------------------------------------------
+
+class ScriptCreate(BaseModel):
+    title: str
+    content: str  # markdown
+
+
+class ScriptPublic(BaseModel):
+    id: str
+    version: int
+    title: str
+    content: str
+    is_active: bool
+    uploaded_by: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
 
@@ -216,3 +254,5 @@ class SessionAnalysis(BaseModel):
     compliance_flags: list[str]
     transcript_summary: str
     recommendations: list[str]
+    script_adherence: Optional[AnalysisScore] = None
+    slide_walkthrough: Optional[AnalysisScore] = None

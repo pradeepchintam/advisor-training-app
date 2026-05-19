@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     AWS_REGION: str = ""
     PRESIGNED_URL_TTL: int = 300  # seconds
 
+    # AWS Polly voices (neural). Override per-deployment.
+    POLLY_VOICE_FEMALE: str = "Joanna"
+    POLLY_VOICE_MALE: str = "Matthew"
+    POLLY_ENGINE: str = "neural"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

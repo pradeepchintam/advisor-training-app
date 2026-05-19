@@ -16,6 +16,10 @@ services:
       # For non-EC2 (e.g. local prod test), pass AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    volumes:
+      # Persistent storage for presentation slides + the original .pptx files.
+      # Session recordings still go to S3 via storage_service.
+      - recordings_data:/app/recordings
     restart: unless-stopped
 
   caddy:
@@ -39,3 +43,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  recordings_data:

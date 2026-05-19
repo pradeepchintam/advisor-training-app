@@ -146,3 +146,37 @@ export interface QuestionnaireContent {
   updated_at: string;
   categories: QuestionnaireCategory[];
 }
+
+// ---------------------------------------------------------------------------
+// Presentations (admin-uploaded slide decks)
+// ---------------------------------------------------------------------------
+export interface Presentation {
+  id: string;
+  version: number;
+  title: string;
+  slide_count: number;
+  is_active: boolean;
+  uploaded_by?: string | null;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Training scripts (markdown, used for grading)
+// ---------------------------------------------------------------------------
+export interface TrainingScript {
+  id: string;
+  version: number;
+  title: string;
+  content: string;
+  is_active: boolean;
+  uploaded_by?: string | null;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Slide events captured during a session (for analysis)
+// ---------------------------------------------------------------------------
+export interface SlideEvent {
+  slide_number: number;
+  timestamp: string;
+}

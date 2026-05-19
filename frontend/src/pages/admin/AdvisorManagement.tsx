@@ -23,6 +23,15 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function generatePassword(length = 16): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%*';
+  let out = '';
+  const arr = new Uint32Array(length);
+  crypto.getRandomValues(arr);
+  for (let i = 0; i < length; i++) out += chars[arr[i] % chars.length];
+  return out;
+}
+
 export default function AdvisorManagement() {
   const toast = useToast();
   const [advisors, setAdvisors] = useState<AdvisorWithStats[]>([]);
@@ -34,6 +43,11 @@ export default function AdvisorManagement() {
   const [editForm, setEditForm] = useState<{ name: string; email: string }>({ name: '', email: '' });
   const [addForm, setAddForm] = useState<AddAdvisorForm>({ name: '', email: '', password: '', role: 'advisor' });
   const [saving, setSaving] = useState(false);
+
+  // Password reset
+  const [resetTarget, setResetTarget] = useState<AdvisorWithStats | null>(null);
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetVisible, setResetVisible] = useState(false);
 
   const loadAdvisors = () => {
     advisorsApi
@@ -90,6 +104,39 @@ export default function AdvisorManagement() {
       loadAdvisors();
     } catch (err) {
       toast.error(`Failed to deactivate advisor: ${getErrorMessage(err)}`);
+    }
+  };
+
+  const openResetModal = (advisor: AdvisorWithStats) => {
+    setResetTarget(advisor);
+    setResetPassword(generatePassword());
+    setResetVisible(true);
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetTarget) return;
+    if (resetPassword.length < 8) {
+      toast.error('Password must be at least 8 characters');
+      return;
+    }
+    setSaving(true);
+    try {
+      await advisorsApi.resetPassword(resetTarget.id, resetPassword);
+      toast.success(`Password reset for ${resetTarget.name}`);
+      // Keep modal open so admin can copy the password before closing
+    } catch (err) {
+      toast.error(`Failed to reset password: ${getErrorMessage(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const copyPassword = async () => {
+    try {
+      await navigator.clipboard.writeText(resetPassword);
+      toast.success('Copied');
+    } catch {
+      toast.error('Copy failed — select the text and copy manually');
     }
   };
 
@@ -214,6 +261,12 @@ export default function AdvisorManagement() {
                           >
                             Edit
                           </button>
+                          <button
+                            onClick={() => openResetModal(advisor)}
+                            className="text-blue-400 hover:text-blue-300 text-xs font-medium transition-colors"
+                          >
+                            Reset password
+                          </button>
                           {advisor.is_active && (
                             <button
                               onClick={() => setDeactivateTarget(advisor)}
@@ -318,6 +371,74 @@ export default function AdvisorManagement() {
         onConfirm={handleDeactivate}
         onCancel={() => setDeactivateTarget(null)}
       />
+
+      {/* Reset Password Modal */}
+      {resetTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => { setResetTarget(null); setResetPassword(''); }}
+          />
+          <div className="relative bg-navy-800 border border-navy-700 rounded-xl shadow-2xl p-6 w-full max-w-md mx-4">
+            <h3 className="text-lg font-semibold text-white mb-1">Reset password</h3>
+            <p className="text-slate-400 text-sm mb-5">
+              Set a new password for <span className="text-white font-medium">{resetTarget.name}</span>{' '}
+              (<span className="text-slate-500">{resetTarget.email}</span>). Share it with them through a secure channel.
+            </p>
+
+            <label className="block text-xs text-slate-400 mb-1">New password</label>
+            <div className="flex gap-2 mb-2">
+              <input
+                type={resetVisible ? 'text' : 'password'}
+                value={resetPassword}
+                onChange={(e) => setResetPassword(e.target.value)}
+                minLength={8}
+                className="flex-1 bg-navy-900 border border-navy-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-gold-500"
+              />
+              <button
+                type="button"
+                onClick={() => setResetVisible((v) => !v)}
+                title={resetVisible ? 'Hide' : 'Show'}
+                className="px-3 py-2 bg-navy-700 hover:bg-navy-600 text-slate-300 rounded-lg text-xs"
+              >
+                {resetVisible ? 'Hide' : 'Show'}
+              </button>
+            </div>
+            <div className="flex gap-2 mb-5 text-xs">
+              <button
+                onClick={() => setResetPassword(generatePassword())}
+                className="text-slate-400 hover:text-slate-200 transition-colors"
+              >
+                ↻ Generate strong password
+              </button>
+              <span className="text-slate-600">·</span>
+              <button
+                onClick={copyPassword}
+                className="text-slate-400 hover:text-slate-200 transition-colors"
+              >
+                📋 Copy
+              </button>
+              <span className="ml-auto text-slate-600">{resetPassword.length} chars</span>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setResetTarget(null); setResetPassword(''); }}
+                className="flex-1 py-2 bg-navy-700 hover:bg-navy-600 text-slate-300 rounded-lg text-sm font-medium transition-colors"
+              >
+                Close
+              </button>
+              <button
+                onClick={handleResetPassword}
+                disabled={saving || resetPassword.length < 8}
+                className="flex-1 py-2 bg-gold-500 hover:bg-gold-400 disabled:opacity-60 disabled:cursor-not-allowed text-navy-900 font-bold rounded-lg text-sm transition-colors"
+              >
+                {saving ? 'Saving…' : 'Save new password'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

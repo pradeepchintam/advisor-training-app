@@ -15,6 +15,8 @@ import AdminDashboard from './pages/admin/AdminDashboard';
 import AdvisorManagement from './pages/admin/AdvisorManagement';
 import QuestionnaireEditor from './pages/admin/QuestionnaireEditor';
 import AdminSessionReview from './pages/admin/AdminSessionReview';
+import PresentationManagement from './pages/admin/PresentationManagement';
+import ScriptEditor from './pages/admin/ScriptEditor';
 
 function LoadingScreen() {
   return (
@@ -184,6 +186,24 @@ export default function App() {
         element={
           <ProtectedRoute adminOnly>
             <Layout><AdminSessionReview /></Layout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/admin/presentation"
+        element={
+          <ProtectedRoute adminOnly>
+            <Layout><PresentationManagement /></Layout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/admin/script"
+        element={
+          <ProtectedRoute adminOnly>
+            <Layout><ScriptEditor /></Layout>
           </ProtectedRoute>
         }
       />

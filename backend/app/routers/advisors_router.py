@@ -156,6 +156,13 @@ async def update_advisor(
         user.email = payload.email
     if payload.is_active is not None:
         user.is_active = payload.is_active
+    if payload.password is not None:
+        if len(payload.password) < 8:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password must be at least 8 characters",
+            )
+        user.hashed_password = get_password_hash(payload.password)
 
     await db.flush()
     await db.refresh(user)

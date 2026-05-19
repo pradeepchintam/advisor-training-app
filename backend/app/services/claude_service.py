@@ -66,27 +66,31 @@ async def simulate_client_response(
     topics_formatted = _format_topics(questionnaire_topics)
     covered_count = len([m for m in conversation_history if m.get("role") == "client"])
 
-    system_prompt = f"""You are roleplaying as {persona.name}, a {persona.age}-year-old {persona.marital_status} {persona.occupation} seeking wealth management advice.
+    system_prompt = f"""You are roleplaying as {persona.name}, a {persona.age}-year-old {persona.marital_status} {persona.occupation}.
+
+This is your FIRST meeting with this fiduciary advisor. You are a prospective client — you haven't signed any paperwork, you don't know this person yet, and you're here mostly to listen and decide whether you trust them enough to work together. The advisor is leading the meeting and will walk you through their firm's presentation deck before getting into your specific situation.
 
 PERSONALITY: You are {persona.personality_type} and {persona.communication_style} in communication.
-FINANCIAL PROFILE: {persona.financial_situation} financial situation, {persona.estimated_net_worth} net worth, {persona.risk_tolerance} risk tolerance.
-PRIMARY GOALS: {", ".join(persona.primary_concerns) if persona.primary_concerns else "general financial planning"}
-BACKSTORY: {persona.backstory}
+PRIVATE BACKGROUND (don't volunteer this — wait to be asked):
+- Financial situation: {persona.financial_situation}, net worth: {persona.estimated_net_worth}
+- Risk tolerance: {persona.risk_tolerance}
+- Goals weighing on your mind: {", ".join(persona.primary_concerns) if persona.primary_concerns else "general financial planning"}
+- Backstory: {persona.backstory}
 
-BEHAVIOR GUIDELINES:
-- Stay in character at ALL times as this specific client
-- Your responses should be 1-4 sentences typically, natural conversational length
-- Show personality: if anxious, express worry; if skeptical, push back; if analytical, ask detailed questions
-- Gradually reveal financial information as trust builds - don't dump everything upfront
-- If the advisor asks about topics you haven't mentioned, react naturally based on your personality
-- You may occasionally go off-script with natural follow-up questions based on the conversation
-- Never break character or mention you are an AI
-- Reference your backstory naturally in conversation
+BEHAVIOR GUIDELINES — read these carefully:
+- Stay in character at ALL times. Never break character or mention you are an AI.
+- Keep replies SHORT (1-3 sentences typically). Real prospective clients don't monologue, especially in the first few minutes.
+- LET THE ADVISOR LEAD. Don't volunteer your goals, net worth, employment details, or family situation unless they specifically ask. If they're walking through slides, listen — react with brief questions or acknowledgements ("That makes sense", "What does that mean for someone like me?", "Hmm, okay").
+- Open the conversation politely and a bit reserved — the way a real person would when meeting a stranger who's about to handle their money. Pleasantries, maybe small talk about your day or how you found the firm — NOT your retirement plan.
+- Only share financial details proportional to what the advisor asks. If they ask "what brings you in today?", give a one-sentence high-level answer (e.g. "I've been thinking about retirement, my friend recommended you") — not your full backstory.
+- Match your personality: if anxious, sound a little hesitant; if skeptical, ask "why should I trust you?"; if analytical, ask precise follow-up questions; if friendly, be warm but still cautious.
+- If the advisor jumps straight to numbers without rapport, react naturally to that (slightly thrown off, redirect, etc.) — don't reward bad behavior by immediately complying.
+- You may glance at the slides they show and react ("That's a useful framework", "Can you explain that point again?") but you don't see the slides directly — judge from what they describe.
 
-CONVERSATION TOPICS TO COVER (work through these naturally):
+TOPICS THE ADVISOR IS EXPECTED TO COVER OVER THE FULL CONVERSATION (this is for context — don't bring them up yourself):
 {topics_formatted}
 
-Current progress: You have covered approximately {covered_count} exchanges so far."""
+Current progress: This is exchange #{covered_count + 1}. Early exchanges should be light/relational; financial depth comes later as the advisor earns it."""
 
     messages = _build_conversation_messages(conversation_history, advisor_message)
 
@@ -114,8 +118,12 @@ Current progress: You have covered approximately {covered_count} exchanges so fa
 # Session analysis
 # ---------------------------------------------------------------------------
 
-async def analyze_session(session: Any) -> dict:
-    """Analyse a completed training session using claude-sonnet-4-6."""
+async def analyze_session(session: Any, script_content: str | None = None) -> dict:
+    """Analyse a completed training session using claude-sonnet-4-6.
+
+    If `script_content` (markdown) is provided, Claude is asked to grade the advisor's
+    adherence to that script and any slide walkthrough captured in session.slide_events.
+    """
 
     persona_data = session.persona if isinstance(session.persona, dict) else session.persona.model_dump()
     persona = ClientPersona(**persona_data)
@@ -128,6 +136,16 @@ async def analyze_session(session: Any) -> dict:
         ts = msg.get("timestamp", "")
         transcript_lines.append(f"[{ts}] {role}: {text}")
     transcript = "\n".join(transcript_lines) if transcript_lines else "(No conversation recorded)"
+
+    # Build slide timeline
+    slide_events = getattr(session, "slide_events", None) or []
+    if slide_events:
+        slide_timeline = "\n".join(
+            f"[{e.get('timestamp', '')}] Advisor moved to slide {e.get('slide_number')}"
+            for e in slide_events
+        )
+    else:
+        slide_timeline = "(No slide changes recorded)"
 
     persona_summary = f"""
 - Name: {persona.name}, Age: {persona.age}, {persona.marital_status}
@@ -145,13 +163,27 @@ Analyze recorded training sessions between a Fiduciary Advisor and a simulated c
 
 Always respond with valid JSON only — no markdown fences, no preamble."""
 
+    script_section = (
+        f"\n\nTRAINING SCRIPT (markdown — the advisor was expected to follow this):\n{script_content}\n"
+        f"\nSLIDE WALKTHROUGH TIMELINE:\n{slide_timeline}\n"
+        if script_content
+        else ""
+    )
+
+    script_grading_keys = (
+        ',\n  "script_adherence": {"score": <1-10>, "feedback": "<how well the advisor followed the script>"}'
+        ',\n  "slide_walkthrough": {"score": <1-10>, "feedback": "<whether slides were shown in the right order at the right time>"}'
+        if script_content
+        else ""
+    )
+
     user_prompt = f"""Analyze this training session between a Fiduciary Advisor and a simulated client.
 
 CLIENT PROFILE:
 {persona_summary}
 
 FULL CONVERSATION TRANSCRIPT:
-{transcript}
+{transcript}{script_section}
 
 Provide a comprehensive evaluation in the following JSON format exactly:
 {{
@@ -169,7 +201,7 @@ Provide a comprehensive evaluation in the following JSON format exactly:
   "areas_for_improvement": ["<improvement 1>", "<improvement 2>"],
   "compliance_flags": ["<flag if any compliance issues, or empty list>"],
   "transcript_summary": "<2-3 sentence summary of the session>",
-  "recommendations": ["<specific actionable recommendation 1>", "<specific actionable recommendation 2>"]
+  "recommendations": ["<specific actionable recommendation 1>", "<specific actionable recommendation 2>"]{script_grading_keys}
 }}"""
 
     # Run in a thread so we don't block the async event loop.

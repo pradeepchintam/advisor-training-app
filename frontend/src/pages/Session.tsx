@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { sessionsApi } from '../services/api';
+import { sessionsApi, presentationsApi, ttsApi } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../components/Toast';
 import ConfirmModal from '../components/ConfirmModal';
 import { getErrorMessage } from '../utils/errors';
-import type { SessionDetail, ConversationMessage } from '../types';
+import type { SessionDetail, ConversationMessage, Presentation } from '../types';
 
 type SessionStatus = 'connecting' | 'ready' | 'listening' | 'processing' | 'client_speaking' | 'ended' | 'error';
 
@@ -52,12 +52,18 @@ export default function Session() {
   const [isEnding, setIsEnding] = useState(false);
   const [interimText, setInterimText] = useState('');
 
+  // Slide deck state
+  const [presentation, setPresentation] = useState<Presentation | null>(null);
+  const [currentSlide, setCurrentSlide] = useState(1);
+  const [slideBlobUrl, setSlideBlobUrl] = useState<string | null>(null);
+  const [slideLoading, setSlideLoading] = useState(false);
+
   const wsRef = useRef<WebSocket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const synthVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const endingRef = useRef(false);
@@ -94,7 +100,17 @@ export default function Session() {
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, []);
 
-  // Cleanup on unmount — stop camera/mic even if user navigates away
+  // Helper: stop any in-flight TTS audio and free its blob URL.
+  const stopAudio = useCallback(() => {
+    if (audioRef.current) {
+      try { audioRef.current.pause(); } catch { /* ignored */ }
+      const src = audioRef.current.src;
+      audioRef.current = null;
+      if (src && src.startsWith('blob:')) URL.revokeObjectURL(src);
+    }
+  }, []);
+
+  // Cleanup on unmount — stop camera/mic + audio even if user navigates away
   useEffect(() => {
     return () => {
       if (mediaStreamRef.current) {
@@ -103,54 +119,83 @@ export default function Session() {
       }
       try { mediaRecorderRef.current?.stop(); } catch { /* already stopped */ }
       try { recognitionRef.current?.abort(); } catch { /* already stopped */ }
-      speechSynthesis.cancel();
+      stopAudio();
     };
+  }, [stopAudio]);
+
+  // Fetch the active presentation once per session.
+  useEffect(() => {
+    presentationsApi.getActive()
+      .then((p) => {
+        setPresentation(p);
+        setCurrentSlide(1);
+      })
+      .catch(() => setPresentation(null));
   }, []);
 
-  // Pick synth voice for client based on persona gender
+  // Whenever the slide number changes (or the deck loads), fetch that slide's PNG.
   useEffect(() => {
-    const pickVoice = () => {
-      const voices = speechSynthesis.getVoices();
-      if (voices.length === 0) return;
-      const gender = session?.persona?.gender;
-      const enVoices = voices.filter((v) => v.lang.startsWith('en'));
-      if (enVoices.length === 0) { synthVoiceRef.current = voices[0]; return; }
+    if (!presentation) return;
+    let cancelled = false;
+    setSlideLoading(true);
+    presentationsApi.fetchSlideBlob(presentation.id, currentSlide)
+      .then((blob) => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        setSlideBlobUrl((prev) => {
+          if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+          return url;
+        });
+      })
+      .catch(() => { /* swallow — UI shows fallback */ })
+      .finally(() => { if (!cancelled) setSlideLoading(false); });
+    return () => { cancelled = true; };
+  }, [presentation, currentSlide]);
 
-      // Score each voice: higher = better match for the target gender.
-      // Known female voices: Samantha (macOS), Zira (Windows), Google UK English Female,
-      //   Karen, Moira, Tessa, Veena, Fiona, Victoria, Susan, Joanna, Salli, Kendra, Kimberly.
-      // Known male voices: Alex, Daniel, David, Google UK English Male, Tom, Fred,
-      //   Matthew, Justin, Joey, Russell.
-      const femaleKeywords = /samantha|zira|karen|moira|tessa|veena|fiona|victoria|susan|female|woman|joanna|salli|kendra|kimberly/i;
-      const maleKeywords   = /alex|daniel|david|tom|fred|matthew|justin|joey|russell|male|man/i;
-
-      const score = (v: SpeechSynthesisVoice) => {
-        if (gender === 'female') return femaleKeywords.test(v.name) ? 2 : maleKeywords.test(v.name) ? 0 : 1;
-        return maleKeywords.test(v.name) ? 2 : femaleKeywords.test(v.name) ? 0 : 1;
-      };
-
-      const best = enVoices.reduce((a, b) => (score(b) > score(a) ? b : a), enVoices[0]);
-      synthVoiceRef.current = best;
+  // Revoke the slide blob URL on unmount.
+  useEffect(() => {
+    return () => {
+      if (slideBlobUrl && slideBlobUrl.startsWith('blob:')) URL.revokeObjectURL(slideBlobUrl);
     };
-    pickVoice();
-    speechSynthesis.onvoiceschanged = pickVoice;
-    return () => { speechSynthesis.onvoiceschanged = null; };
-  }, [session?.persona?.gender]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Speak text via SpeechSynthesis
+  // Navigate to a slide and notify the backend so the analysis can track timing.
+  const goToSlide = useCallback((n: number) => {
+    if (!presentation) return;
+    const clamped = Math.max(1, Math.min(presentation.slide_count, n));
+    if (clamped === currentSlide) return;
+    setCurrentSlide(clamped);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'advisor_slide_change', slide_number: clamped }));
+    }
+  }, [presentation, currentSlide]);
+
+  // Speak text via AWS Polly (server-side). Returns when audio playback ends.
   const speak = useCallback(
-    (text: string) => {
-      speechSynthesis.cancel();
-      const utt = new SpeechSynthesisUtterance(text);
-      if (synthVoiceRef.current) utt.voice = synthVoiceRef.current;
-      utt.rate = 0.9;
-      utt.pitch = session?.persona?.gender === 'female' ? 1.2 : 0.85;
-      utt.onstart = () => setSessionStatus('client_speaking');
-      utt.onend = () => setSessionStatus('ready');
-      utt.onerror = () => setSessionStatus('ready');
-      speechSynthesis.speak(utt);
+    async (text: string) => {
+      stopAudio();
+      try {
+        setSessionStatus('client_speaking');
+        const url = await ttsApi.synthesize(text, session?.persona?.gender as ('male' | 'female' | undefined));
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        audio.onended = () => {
+          stopAudio();
+          setSessionStatus('ready');
+        };
+        audio.onerror = () => {
+          stopAudio();
+          setSessionStatus('ready');
+        };
+        await audio.play();
+      } catch (err) {
+        stopAudio();
+        toast.error(`TTS error: ${getErrorMessage(err)}`);
+        setSessionStatus('ready');
+      }
     },
-    [session?.persona?.gender]
+    [session?.persona?.gender, stopAudio, toast]
   );
 
   // MediaRecorder setup
@@ -275,7 +320,7 @@ export default function Session() {
     }
 
     // Stop any ongoing speech from client
-    speechSynthesis.cancel();
+    stopAudio();
 
     const recognition = new SR();
     recognitionRef.current = recognition;
@@ -388,7 +433,7 @@ export default function Session() {
 
     try {
       // Stop speech
-      speechSynthesis.cancel();
+      stopAudio();
       recognitionRef.current?.stop();
 
       // Stop recording & upload
@@ -439,7 +484,6 @@ export default function Session() {
     }
   };
 
-  const clientMessages = messages.filter((m) => m.role === 'client');
   const persona = session?.persona;
 
   return (
@@ -481,107 +525,100 @@ export default function Session() {
 
       {/* Main content */}
       <div className="flex flex-1 overflow-hidden">
-        {/* LEFT: Client Panel */}
-        <div className="w-80 flex-shrink-0 bg-navy-900 border-r border-navy-700 flex flex-col">
-          {/* Client profile */}
-          <div className="p-5 border-b border-navy-700">
-            <div className="flex flex-col items-center">
-              {session?.client_image_url ? (
-                <img
-                  src={session.client_image_url}
-                  alt={session.client_name}
-                  className="w-20 h-20 rounded-full object-cover border-2 border-navy-600 mb-3"
-                />
-              ) : (
-                <div className="w-20 h-20 rounded-full bg-navy-700 border-2 border-navy-600 flex items-center justify-center text-2xl font-bold text-gold-400 mb-3">
-                  {session?.client_name?.[0] ?? '?'}
+        {/* LEFT: Slide Pane (60%) */}
+        <div className="flex-1 bg-navy-950 border-r border-navy-700 flex flex-col min-w-0">
+          {presentation ? (
+            <>
+              {/* Slide header */}
+              <div className="px-5 py-3 border-b border-navy-700 flex items-center justify-between bg-navy-900">
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-300 text-sm font-semibold truncate max-w-md">{presentation.title}</span>
+                  <span className="text-slate-500 text-xs">v{presentation.version}</span>
                 </div>
-              )}
-              <div className="text-white font-semibold text-base">{session?.client_name}</div>
-              {persona && (
-                <div className="text-slate-500 text-xs mt-1 text-center">
-                  {persona.age_group.replace('_', ' ')} · {persona.marital_status.replace('_', ' ')}
-                </div>
-              )}
-            </div>
-
-            {persona && (
-              <div className="mt-4 space-y-1.5 text-xs">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Goal</span>
-                  <span className="text-slate-300">{(persona.primary_concerns ?? []).join(', ')}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Risk</span>
-                  <span className="text-slate-300">{persona.risk_tolerance.replace('_', ' ')}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Personality</span>
-                  <span className="text-slate-300">{persona.personality_type.replace('_', ' ')}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Net Worth</span>
-                  <span className="text-slate-300">{persona.estimated_net_worth}</span>
+                <div className="text-slate-400 text-sm font-mono">
+                  Slide {currentSlide} / {presentation.slide_count}
                 </div>
               </div>
-            )}
-          </div>
 
-          {/* Emotion indicator */}
-          <div className="px-5 py-3 border-b border-navy-700">
-            <div className="text-xs text-slate-500 mb-2 font-medium uppercase tracking-wider">Client Mood</div>
-            <div className="flex items-center gap-2">
-              <span className="text-xl">
-                {persona?.personality_type === 'anxious'
-                  ? '😰'
-                  : persona?.personality_type === 'confident'
-                  ? '😎'
-                  : persona?.personality_type === 'skeptical'
-                  ? '🤔'
-                  : persona?.personality_type === 'analytical'
-                  ? '📊'
-                  : persona?.personality_type === 'emotional'
-                  ? '💭'
-                  : persona?.personality_type === 'impulsive'
-                  ? '⚡'
-                  : persona?.personality_type === 'detail_oriented'
-                  ? '🔍'
-                  : '🤝'}
-              </span>
-              <div>
-                <div className="text-white text-sm font-medium capitalize">
-                  {persona?.personality_type?.replace('_', ' ') ?? '—'}
-                </div>
-                <div className="text-slate-500 text-xs capitalize">
-                  {persona?.communication_style} communicator
-                </div>
+              {/* Slide image */}
+              <div className="flex-1 flex items-center justify-center p-6 overflow-hidden">
+                {slideBlobUrl ? (
+                  <img
+                    src={slideBlobUrl}
+                    alt={`Slide ${currentSlide}`}
+                    className={`max-w-full max-h-full object-contain rounded-lg shadow-2xl transition-opacity ${slideLoading ? 'opacity-50' : 'opacity-100'}`}
+                  />
+                ) : (
+                  <div className="text-slate-600 text-sm">Loading slide…</div>
+                )}
               </div>
-            </div>
-          </div>
 
-          {/* Client-side transcript */}
-          <div className="flex-1 overflow-y-auto p-4">
-            <div className="text-xs text-slate-500 mb-3 font-medium uppercase tracking-wider">
-              Client Messages
-            </div>
-            <div className="space-y-3">
-              {clientMessages.map((msg, i) => (
-                <div
-                  key={i}
-                  className="bg-navy-800 rounded-lg p-3 border border-navy-700 text-sm text-slate-300 leading-relaxed"
+              {/* Slide nav */}
+              <div className="px-5 py-3 border-t border-navy-700 bg-navy-900 flex items-center justify-between gap-3">
+                <button
+                  onClick={() => goToSlide(currentSlide - 1)}
+                  disabled={currentSlide <= 1}
+                  className="px-4 py-2 bg-navy-700 hover:bg-navy-600 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200 rounded-lg text-sm transition-colors"
                 >
-                  {msg.text}
+                  ← Prev
+                </button>
+                <div className="flex gap-1 flex-1 justify-center overflow-x-auto">
+                  {Array.from({ length: presentation.slide_count }, (_, i) => i + 1).map((n) => (
+                    <button
+                      key={n}
+                      onClick={() => goToSlide(n)}
+                      className={`w-7 h-7 rounded text-xs font-semibold flex-shrink-0 transition-colors ${
+                        n === currentSlide ? 'bg-gold-500 text-navy-900' : 'bg-navy-700 text-slate-400 hover:bg-navy-600 hover:text-slate-200'
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
                 </div>
-              ))}
-              {clientMessages.length === 0 && (
-                <div className="text-slate-600 text-xs italic">Waiting for session to start...</div>
-              )}
+                <button
+                  onClick={() => goToSlide(currentSlide + 1)}
+                  disabled={currentSlide >= presentation.slide_count}
+                  className="px-4 py-2 bg-navy-700 hover:bg-navy-600 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200 rounded-lg text-sm transition-colors"
+                >
+                  Next →
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+              <div className="text-5xl mb-4">📊</div>
+              <div className="text-slate-400 font-medium mb-1">No active presentation</div>
+              <div className="text-slate-600 text-sm max-w-md">
+                Ask an admin to upload a slide deck in <span className="text-gold-400">Admin → Presentation</span> to walk your client through it during this session.
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
-        {/* RIGHT: Advisor Panel */}
-        <div className="flex-1 flex flex-col">
+        {/* RIGHT: Advisor Panel (40%) */}
+        <div className="w-[40%] min-w-[420px] flex flex-col">
+          {/* Compact client header */}
+          <div className="px-4 py-3 border-b border-navy-700 bg-navy-800 flex items-center gap-3">
+            {session?.client_image_url ? (
+              <img
+                src={session.client_image_url}
+                alt={session.client_name}
+                className="w-10 h-10 rounded-full object-cover border border-navy-600 flex-shrink-0"
+              />
+            ) : (
+              <div className="w-10 h-10 rounded-full bg-navy-700 border border-navy-600 flex items-center justify-center text-base font-bold text-gold-400 flex-shrink-0">
+                {session?.client_name?.[0] ?? '?'}
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <div className="text-white text-sm font-semibold truncate">{session?.client_name}</div>
+              {persona && (
+                <div className="text-slate-500 text-xs truncate">
+                  {persona.age_group.replace('_', ' ')} · {persona.personality_type.replace('_', ' ')} · {(persona.primary_concerns ?? []).join(', ')}
+                </div>
+              )}
+            </div>
+          </div>
           {/* Conversation transcript */}
           <div ref={transcriptRef} className="flex-1 overflow-y-auto p-6 space-y-4">
             {messages.length === 0 && (

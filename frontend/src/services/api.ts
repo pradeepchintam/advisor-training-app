@@ -7,6 +7,8 @@ import type {
   SessionAnalysis,
   ClientPersona,
   QuestionnaireContent,
+  Presentation,
+  TrainingScript,
 } from '../types';
 
 const api = axios.create({
@@ -61,8 +63,12 @@ export const advisorsApi = {
     const response = await api.post('/advisors', data);
     return response.data;
   },
-  update: async (id: string, data: Partial<User>): Promise<User> => {
+  update: async (id: string, data: Partial<User> & { password?: string }): Promise<User> => {
     const response = await api.put(`/advisors/${id}`, data);
+    return response.data;
+  },
+  resetPassword: async (id: string, password: string): Promise<User> => {
+    const response = await api.put(`/advisors/${id}`, { password });
     return response.data;
   },
   deactivate: async (id: string): Promise<void> => {
@@ -123,6 +129,94 @@ export const questionnaireApi = {
   update: async (data: QuestionnaireContent): Promise<QuestionnaireContent> => {
     const response = await api.put('/questionnaire', data);
     return unwrapQuestionnaire(response.data);
+  },
+};
+
+// Presentations (admin-uploaded slide decks)
+export const presentationsApi = {
+  list: async (): Promise<Presentation[]> => {
+    const response = await api.get('/presentations');
+    return response.data;
+  },
+  getActive: async (): Promise<Presentation | null> => {
+    try {
+      const response = await api.get('/presentations/active');
+      return response.data;
+    } catch (err: unknown) {
+      // 404 means no active deck — return null instead of throwing
+      const status = (err as { response?: { status?: number } }).response?.status;
+      if (status === 404) return null;
+      throw err;
+    }
+  },
+  upload: async (title: string, file: File): Promise<Presentation> => {
+    const formData = new FormData();
+    formData.append('title', title);
+    formData.append('file', file);
+    const response = await api.post('/presentations', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+  activate: async (id: string): Promise<Presentation> => {
+    const response = await api.post(`/presentations/${id}/activate`);
+    return response.data;
+  },
+  delete: async (id: string): Promise<void> => {
+    await api.delete(`/presentations/${id}`);
+  },
+  slideUrl: (id: string, slideNumber: number): string => {
+    // Returns a URL the <img> tag can hit directly. The axios interceptor adds
+    // the bearer token via header, but <img src> can't carry headers — so we
+    // append the token as a query param if present.
+    const token = localStorage.getItem('auth_token') || '';
+    return `/api/presentations/${id}/slides/${slideNumber}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+  },
+  // For programmatic fetch where we want to use axios + interceptor auth
+  fetchSlideBlob: async (id: string, slideNumber: number): Promise<Blob> => {
+    const response = await api.get(`/presentations/${id}/slides/${slideNumber}`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+};
+
+// Training scripts (markdown)
+export const scriptsApi = {
+  list: async (): Promise<TrainingScript[]> => {
+    const response = await api.get('/scripts');
+    return response.data;
+  },
+  getActive: async (): Promise<TrainingScript | null> => {
+    try {
+      const response = await api.get('/scripts/active');
+      return response.data;
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } }).response?.status;
+      if (status === 404) return null;
+      throw err;
+    }
+  },
+  create: async (data: { title: string; content: string }): Promise<TrainingScript> => {
+    const response = await api.post('/scripts', data);
+    return response.data;
+  },
+  activate: async (id: string): Promise<TrainingScript> => {
+    const response = await api.post(`/scripts/${id}/activate`);
+    return response.data;
+  },
+  delete: async (id: string): Promise<void> => {
+    await api.delete(`/scripts/${id}`);
+  },
+};
+
+// Text-to-speech via AWS Polly
+export const ttsApi = {
+  /** Synthesize text to mp3 bytes. Returns an object URL that <audio src> can use. */
+  synthesize: async (text: string, gender?: 'male' | 'female' | null): Promise<string> => {
+    const response = await api.post('/tts', { text, gender }, { responseType: 'blob' });
+    const blob = response.data as Blob;
+    return URL.createObjectURL(blob);
   },
 };
 

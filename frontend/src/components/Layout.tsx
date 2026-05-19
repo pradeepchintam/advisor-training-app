@@ -85,6 +85,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     { to: '/admin', label: 'Admin Dashboard', icon: <ChartIcon /> },
     { to: '/admin/advisors', label: 'Manage Advisors', icon: <UsersIcon /> },
     { to: '/admin/questionnaire', label: 'Questionnaire', icon: <ClipboardIcon /> },
+    { to: '/admin/presentation', label: 'Presentation', icon: <ClipboardIcon /> },
+    { to: '/admin/script', label: 'Script', icon: <ClipboardIcon /> },
     { to: '/admin/sessions', label: 'Review Sessions', icon: <EyeIcon /> },
   ];
 

@@ -33,6 +33,13 @@ async def _fetch_client_image(gender: str) -> str:
     return f"https://ui-avatars.com/api/?name=Client&background=random&size=200"
 
 
+async def _load_active_script_content(db: AsyncSession) -> str | None:
+    from app.models import TrainingScript
+    r = await db.execute(select(TrainingScript).where(TrainingScript.is_active == True))
+    s = r.scalar_one_or_none()
+    return s.content if s else None
+
+
 async def _run_analysis(session_id: str) -> None:
     """Background task: run Claude analysis on the session."""
     from app.database import AsyncSessionLocal
@@ -46,7 +53,8 @@ async def _run_analysis(session_id: str) -> None:
         if session is None:
             return
         try:
-            analysis = await analyze_session(session)
+            script_content = await _load_active_script_content(db)
+            analysis = await analyze_session(session, script_content=script_content)
             session.analysis = analysis
             await db.commit()
         except Exception as e:
@@ -351,7 +359,8 @@ async def get_analysis(
     from app.services.claude_service import analyze_session
 
     try:
-        analysis = await analyze_session(session)
+        script_content = await _load_active_script_content(db)
+        analysis = await analyze_session(session, script_content=script_content)
         session.analysis = analysis
         await db.commit()
         return analysis
