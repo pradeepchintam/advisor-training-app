@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { presentationsApi } from '../../services/api';
 import { useToast } from '../../components/Toast';
 import { getErrorMessage } from '../../utils/errors';
@@ -15,6 +15,7 @@ export default function PresentationManagement() {
   const [uploading, setUploading] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -30,14 +31,21 @@ export default function PresentationManagement() {
   useEffect(() => { refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleUpload = async () => {
-    if (!file) { toast.error('Pick a .pptx file first'); return; }
-    if (!title.trim()) { toast.error('Title is required'); return; }
+    // Validate up front so the user sees a clear message instead of a silently
+    // disabled button.
+    if (!title.trim()) { toast.error('Enter a title for the deck'); return; }
+    if (!file) { toast.error('Pick a .pptx file before uploading'); return; }
+    if (!file.name.toLowerCase().endsWith('.pptx')) {
+      toast.error('Only .pptx files are supported (.ppt won’t work — open in PowerPoint and Save As .pptx)');
+      return;
+    }
     setUploading(true);
     try {
       await presentationsApi.upload(title.trim(), file);
       toast.success('Presentation uploaded and activated');
-      setFile(null); setTitle('');
-      (document.getElementById('pptx-input') as HTMLInputElement | null)?.value && ((document.getElementById('pptx-input') as HTMLInputElement).value = '');
+      setFile(null);
+      setTitle('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
       await refresh();
     } catch (err: unknown) {
       toast.error(`Upload failed: ${getErrorMessage(err)}`);
@@ -89,22 +97,27 @@ export default function PresentationManagement() {
           <div className="md:col-span-1">
             <label className="block text-xs text-slate-400 mb-1">.pptx file</label>
             <input
-              id="pptx-input"
+              ref={fileInputRef}
               type="file"
               accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
               onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               className="w-full text-slate-300 text-sm file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-navy-700 file:text-slate-200 hover:file:bg-navy-600"
             />
+            {file && (
+              <div className="text-xs text-slate-500 mt-1 truncate">
+                Selected: <span className="text-slate-300">{file.name}</span> ({(file.size / 1024).toFixed(0)} KB)
+              </div>
+            )}
           </div>
           <button
             onClick={handleUpload}
-            disabled={uploading || !file || !title.trim()}
+            disabled={uploading}
             className="bg-gold-500 hover:bg-gold-400 disabled:bg-navy-700 disabled:text-slate-500 text-navy-900 font-semibold px-5 py-2 rounded-lg transition-colors"
           >
             {uploading ? 'Uploading…' : 'Upload + activate'}
           </button>
         </div>
-        <p className="text-slate-500 text-xs mt-3">Conversion to slide images can take ~30 seconds for large decks.</p>
+        <p className="text-slate-500 text-xs mt-3">Conversion to slide images can take ~30 seconds for large decks. Only .pptx is supported (not .ppt or .key).</p>
       </div>
 
       {/* List */}

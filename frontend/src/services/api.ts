@@ -96,9 +96,8 @@ export const sessionsApi = {
   uploadRecording: async (id: string, blob: Blob): Promise<void> => {
     const formData = new FormData();
     formData.append('recording', blob, blob.type.includes('video') ? 'recording.webm' : 'recording.webm');
-    await api.post(`/sessions/${id}/recording`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    // Browser auto-sets multipart/form-data with the correct boundary.
+    await api.post(`/sessions/${id}/recording`, formData);
   },
   getRecordingUrl: (id: string): string => {
     const token = localStorage.getItem('auth_token') || '';
@@ -153,9 +152,11 @@ export const presentationsApi = {
     const formData = new FormData();
     formData.append('title', title);
     formData.append('file', file);
-    const response = await api.post('/presentations', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    // IMPORTANT: do not set Content-Type manually. The browser sets
+    // "multipart/form-data; boundary=…" with the correct boundary automatically
+    // when passed a FormData body. An explicit "multipart/form-data" *without*
+    // the boundary makes the server fail to parse the form.
+    const response = await api.post('/presentations', formData);
     return response.data;
   },
   activate: async (id: string): Promise<Presentation> => {
