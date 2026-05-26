@@ -84,6 +84,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const adminNav: NavItem[] = [
     { to: '/admin', label: 'Admin Dashboard', icon: <ChartIcon /> },
     { to: '/admin/advisors', label: 'Manage Advisors', icon: <UsersIcon /> },
+    { to: '/admin/profiles', label: 'Session Profiles', icon: <ClipboardIcon /> },
+    { to: '/admin/assignments', label: 'Assignments', icon: <ListIcon /> },
     { to: '/admin/questionnaire', label: 'Questionnaire', icon: <ClipboardIcon /> },
     { to: '/admin/presentation', label: 'Presentation', icon: <ClipboardIcon /> },
     { to: '/admin/script', label: 'Script', icon: <ClipboardIcon /> },

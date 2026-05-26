@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -49,7 +49,78 @@ class TrainingSession(Base):
     )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Provenance — "assigned" means an admin queued this session for the advisor;
+    # "self_initiated" means the advisor started it themselves.
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="self_initiated", index=True
+    )
+    assignment_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("session_assignments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     advisor: Mapped["User"] = relationship("User", back_populates="sessions")
+    assignment: Mapped["SessionAssignment | None"] = relationship(
+        "SessionAssignment", back_populates="sessions", foreign_keys=[assignment_id]
+    )
+
+
+class SessionProfile(Base):
+    """Reusable persona template authored by an admin and assigned to advisors."""
+    __tablename__ = "session_profiles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    persona: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+    assignments: Mapped[list["SessionAssignment"]] = relationship(
+        "SessionAssignment", back_populates="profile", lazy="selectin"
+    )
+
+
+class SessionAssignment(Base):
+    """An admin's instruction to a specific advisor to run a session against a profile."""
+    __tablename__ = "session_assignments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    profile_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("session_profiles.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    advisor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    assigned_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    assigned_date: Mapped[date] = mapped_column(Date, nullable=False)
+    target_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    # pending | in_progress | completed | cancelled
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    profile: Mapped["SessionProfile"] = relationship(
+        "SessionProfile", back_populates="assignments", lazy="joined"
+    )
+    sessions: Mapped[list["TrainingSession"]] = relationship(
+        "TrainingSession", back_populates="assignment", foreign_keys=[TrainingSession.assignment_id]
+    )
 
 
 class Questionnaire(Base):

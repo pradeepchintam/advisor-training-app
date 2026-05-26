@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -134,7 +134,15 @@ class ClientPersona(BaseModel):
 # ---------------------------------------------------------------------------
 
 class SessionCreate(BaseModel):
-    persona: ClientPersona
+    """Body for POST /api/sessions.
+
+    Two flavors:
+      • Self-initiated — advisor provides a persona; assignment_id is omitted.
+      • Assigned — advisor provides assignment_id; persona is loaded server-side
+        from the profile and any persona in the payload is ignored.
+    """
+    persona: Optional[ClientPersona] = None
+    assignment_id: Optional[str] = None
 
 
 class ConversationMessage(BaseModel):
@@ -154,6 +162,9 @@ class SessionPublic(BaseModel):
     ended_at: Optional[datetime]
     persona: ClientPersona
     overall_score: Optional[float] = None
+    source: str = "self_initiated"
+    assignment_id: Optional[str] = None
+    profile_name: Optional[str] = None  # populated when source == "assigned"
 
     model_config = {"from_attributes": True}
 
@@ -170,6 +181,9 @@ class SessionDetail(BaseModel):
     analysis: Optional[dict]
     started_at: datetime
     ended_at: Optional[datetime]
+    source: str = "self_initiated"
+    assignment_id: Optional[str] = None
+    profile_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -256,3 +270,78 @@ class SessionAnalysis(BaseModel):
     recommendations: list[str]
     script_adherence: Optional[AnalysisScore] = None
     slide_walkthrough: Optional[AnalysisScore] = None
+
+
+# ---------------------------------------------------------------------------
+# Session profiles (reusable persona templates)
+# ---------------------------------------------------------------------------
+
+class SessionProfileCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    persona: ClientPersona
+
+
+class SessionProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    persona: Optional[ClientPersona] = None
+    is_active: Optional[bool] = None
+
+
+class SessionProfilePublic(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    persona: ClientPersona
+    created_by: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Session assignments (admin → advisor)
+# ---------------------------------------------------------------------------
+
+class AssignmentCreate(BaseModel):
+    """Admin assigns a profile to one or more advisors. Server fans out one
+    SessionAssignment row per advisor_id."""
+    profile_id: str
+    advisor_ids: list[str] = Field(min_length=1)
+    assigned_date: date
+    target_date: date
+
+
+class AssignmentUpdate(BaseModel):
+    assigned_date: Optional[date] = None
+    target_date: Optional[date] = None
+    status: Optional[str] = None  # pending | in_progress | completed | cancelled
+
+
+class AssignmentPublic(BaseModel):
+    id: str
+    profile_id: str
+    profile_name: str
+    profile_description: Optional[str] = None
+    persona: ClientPersona
+    advisor_id: str
+    advisor_name: Optional[str] = None
+    assigned_by: Optional[str] = None
+    assigned_by_name: Optional[str] = None
+    assigned_date: date
+    target_date: date
+    status: str
+    created_at: datetime
+    session_id: Optional[str] = None  # most recent linked session, if any
+
+    model_config = {"from_attributes": True}
+
+
+class MyAssignmentsResponse(BaseModel):
+    """Advisor-facing grouping for the dashboard."""
+    today: list[AssignmentPublic]
+    upcoming: list[AssignmentPublic]
+    past: list[AssignmentPublic]

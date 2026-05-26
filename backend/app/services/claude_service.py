@@ -118,11 +118,21 @@ Current progress: This is exchange #{covered_count + 1}. Early exchanges should 
 # Session analysis
 # ---------------------------------------------------------------------------
 
-async def analyze_session(session: Any, script_content: str | None = None) -> dict:
+async def analyze_session(
+    session: Any,
+    script_content: str | None = None,
+    *,
+    asr_transcript: str | None = None,
+    delivery_metrics: dict | None = None,
+) -> dict:
     """Analyse a completed training session using claude-sonnet-4-6.
 
-    If `script_content` (markdown) is provided, Claude is asked to grade the advisor's
-    adherence to that script and any slide walkthrough captured in session.slide_events.
+    Optional enriched signals:
+      • `asr_transcript` — verbatim ASR re-transcription of the recording.
+        When present, included alongside the live browser transcript so the
+        model can spot filler words / hedges / corrections that the live
+        Web Speech transcript dropped.
+      • `delivery_metrics` — prosody summary from prosody_service.
     """
 
     persona_data = session.persona if isinstance(session.persona, dict) else session.persona.model_dump()
@@ -163,29 +173,55 @@ Analyze recorded training sessions between a Fiduciary Advisor and a simulated c
 
 Always respond with valid JSON only — no markdown fences, no preamble."""
 
-    script_section = (
-        f"\n\nTRAINING SCRIPT (markdown — the advisor was expected to follow this):\n{script_content}\n"
-        f"\nSLIDE WALKTHROUGH TIMELINE:\n{slide_timeline}\n"
+    # Script adherence and slide walkthrough are FIRST-CLASS criteria. We
+    # always ask the model to score them — when there is no active script or
+    # no slide events, the model returns score=null and a feedback string
+    # explaining the absence (so the UI can render an "N/A" state).
+    script_block = (
+        f"\nTRAINING SCRIPT (markdown — the advisor was expected to follow this):\n{script_content}\n"
         if script_content
-        else ""
+        else "\nTRAINING SCRIPT: (no active script — score script_adherence as null with feedback 'No active training script for this session')\n"
+    )
+    slide_block = (
+        f"\nSLIDE WALKTHROUGH TIMELINE (advisor's slide changes during the session):\n{slide_timeline}\n"
+        if slide_events
+        else "\nSLIDE WALKTHROUGH TIMELINE: (no slides shown — score slide_walkthrough as null with feedback 'No slides were navigated during this session')\n"
     )
 
-    script_grading_keys = (
-        ',\n  "script_adherence": {"score": <1-10>, "feedback": "<how well the advisor followed the script>"}'
-        ',\n  "slide_walkthrough": {"score": <1-10>, "feedback": "<whether slides were shown in the right order at the right time>"}'
-        if script_content
-        else ""
-    )
+    # Optional ASR-derived signals
+    asr_block = ""
+    if asr_transcript:
+        asr_block = (
+            "\nVERBATIM ASR TRANSCRIPT (from the recorded audio — includes filler "
+            "words, hedges, and disfluencies the live browser transcript may have "
+            "dropped):\n" + asr_transcript + "\n"
+        )
+
+    delivery_block = ""
+    if delivery_metrics:
+        from app.services.prosody_service import format_metrics_for_prompt
+        delivery_block = (
+            "\nDELIVERY METRICS (objective):\n"
+            + format_metrics_for_prompt(delivery_metrics) + "\n"
+        )
 
     user_prompt = f"""Analyze this training session between a Fiduciary Advisor and a simulated client.
 
 CLIENT PROFILE:
 {persona_summary}
 
-FULL CONVERSATION TRANSCRIPT:
-{transcript}{script_section}
+FULL CONVERSATION TRANSCRIPT (live, from the browser):
+{transcript}
+{asr_block}{delivery_block}{script_block}{slide_block}
 
-Provide a comprehensive evaluation in the following JSON format exactly:
+Provide a comprehensive evaluation in the following JSON format exactly. The
+fields `script_adherence` and `slide_walkthrough` are MANDATORY top-level keys
+— set their `score` to null (not zero) when the underlying artifact is absent,
+but always include the key with a feedback string. When delivery metrics are
+provided, fold pace / filler-word density / talk-time ratio into the
+`communication_skills` score and reference the numeric metrics in its
+feedback.
+
 {{
   "overall_score": <float 1-10>,
   "categories": {{
@@ -194,14 +230,16 @@ Provide a comprehensive evaluation in the following JSON format exactly:
     "needs_analysis": {{"score": <1-10>, "feedback": "<specific feedback>"}},
     "product_knowledge": {{"score": <1-10>, "feedback": "<specific feedback>"}},
     "compliance_adherence": {{"score": <1-10>, "feedback": "<specific feedback>"}},
-    "communication_skills": {{"score": <1-10>, "feedback": "<specific feedback>"}},
+    "communication_skills": {{"score": <1-10>, "feedback": "<specific feedback grounded in pace/fillers if available>"}},
     "closing_skills": {{"score": <1-10>, "feedback": "<specific feedback>"}}
   }},
+  "script_adherence": {{"score": <1-10 or null>, "feedback": "<how closely the advisor followed the active training script — cite specific deviations or wins; if no script say so>"}},
+  "slide_walkthrough": {{"score": <1-10 or null>, "feedback": "<did the advisor present the slides in the right order, dwell appropriately on each, and reference them in the conversation? Use the slide timeline timestamps to ground your judgement. If no slides were shown say so.>"}},
   "strengths": ["<strength 1>", "<strength 2>"],
   "areas_for_improvement": ["<improvement 1>", "<improvement 2>"],
   "compliance_flags": ["<flag if any compliance issues, or empty list>"],
   "transcript_summary": "<2-3 sentence summary of the session>",
-  "recommendations": ["<specific actionable recommendation 1>", "<specific actionable recommendation 2>"]{script_grading_keys}
+  "recommendations": ["<specific actionable recommendation 1>", "<specific actionable recommendation 2>"]
 }}"""
 
     # Run in a thread so we don't block the async event loop.

@@ -47,7 +47,6 @@ export default function Session() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [isVideoRecording, setIsVideoRecording] = useState(false);
-  const [textInput, setTextInput] = useState('');
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
   const [interimText, setInterimText] = useState('');
@@ -67,6 +66,13 @@ export default function Session() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const endingRef = useRef(false);
+  // Buffer of finalized speech segments accumulated since the advisor pressed
+  // "Start Talking". Sent in one message when they press "Stop Talking".
+  const pendingTranscriptRef = useRef<string>('');
+  // True between Start Talking and Stop Talking — even across mid-utterance
+  // silences. Used to keep the mic UI in "listening" state without relying on
+  // the browser's auto end-of-speech events.
+  const isTalkingRef = useRef(false);
 
   // Scroll transcript to bottom
   const scrollTranscript = useCallback(() => {
@@ -118,6 +124,7 @@ export default function Session() {
         mediaStreamRef.current = null;
       }
       try { mediaRecorderRef.current?.stop(); } catch { /* already stopped */ }
+      isTalkingRef.current = false;
       try { recognitionRef.current?.abort(); } catch { /* already stopped */ }
       stopAudio();
     };
@@ -319,37 +326,47 @@ export default function Session() {
       return;
     }
 
-    // Stop any ongoing speech from client
-    stopAudio();
+    // Note: do NOT auto-stop the client's TTS playback here. The speaker's
+    // audio should only be stopped when the user explicitly chooses to stop it.
 
     const recognition = new SR();
     recognitionRef.current = recognition;
-    recognition.continuous = false;
+    // continuous=true keeps the recognizer alive across pauses so the advisor
+    // can think mid-sentence without the browser auto-ending the utterance.
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
+    pendingTranscriptRef.current = '';
+    isTalkingRef.current = true;
     setSessionStatus('listening');
     setInterimText('');
 
     recognition.onresult = (evt: SpeechRecognitionEvent) => {
       let interim = '';
-      let final = '';
+      let newFinal = '';
       for (let i = evt.resultIndex; i < evt.results.length; i++) {
         const t = evt.results[i][0].transcript;
-        if (evt.results[i].isFinal) final += t;
+        if (evt.results[i].isFinal) newFinal += t;
         else interim += t;
       }
-      setInterimText(interim);
-      if (final) {
-        sendAdvisorMessage(final.trim());
-        setInterimText('');
+      if (newFinal) {
+        pendingTranscriptRef.current = (
+          pendingTranscriptRef.current + ' ' + newFinal
+        ).trim();
       }
+      // Show pending + interim live so the advisor can see what's captured so far.
+      setInterimText(
+        (pendingTranscriptRef.current + (interim ? ' ' + interim : '')).trim()
+      );
     };
 
     recognition.onerror = (evt: SpeechRecognitionErrorEvent) => {
-      if (evt.error !== 'aborted') {
+      // 'no-speech' fires when the advisor pauses; we don't want that to end
+      // the session — they may still be thinking. Only surface real errors.
+      const ignorable = evt.error === 'aborted' || evt.error === 'no-speech';
+      if (!ignorable) {
         const explain: Record<string, string> = {
-          'no-speech': 'No speech detected — please speak louder or check your microphone',
           'audio-capture': 'Microphone not available — check browser permissions',
           'not-allowed': 'Microphone permission denied — allow access in your browser settings',
           'network': 'Network error in speech recognition service',
@@ -359,24 +376,45 @@ export default function Session() {
         };
         const detail = explain[evt.error] || evt.error;
         toast.error(`Microphone error (${evt.error}): ${detail}${evt.message ? ` — ${evt.message}` : ''}`);
+        isTalkingRef.current = false;
+        setSessionStatus('ready');
+        setInterimText('');
       }
-      setSessionStatus('ready');
-      setInterimText('');
+      // Otherwise the browser will fire onend right after; we re-arm there.
     };
 
     recognition.onend = () => {
-      if (sessionStatus === 'listening') setSessionStatus('ready');
+      // If the advisor still wants to be talking (hasn't pressed Stop yet),
+      // re-arm the recognizer. Some browsers end the session at the first long
+      // pause even when continuous=true.
+      if (isTalkingRef.current) {
+        try { recognition.start(); } catch { /* already running */ }
+        return;
+      }
       setInterimText('');
     };
 
-    recognition.start();
-  }, [toast, sessionStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+    try {
+      recognition.start();
+    } catch {
+      // start() can throw "InvalidStateError" if the recognizer is already
+      // running from a previous re-arm — safe to ignore.
+    }
+  }, [toast]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stopListening = useCallback(() => {
-    recognitionRef.current?.stop();
-    setSessionStatus('ready');
+    // Tell the re-arm guard to NOT restart recognition on onend.
+    isTalkingRef.current = false;
+    try { recognitionRef.current?.stop(); } catch { /* ignored */ }
+    const finalText = pendingTranscriptRef.current.trim();
+    pendingTranscriptRef.current = '';
     setInterimText('');
-  }, []);
+    if (finalText) {
+      sendAdvisorMessage(finalText);
+    } else {
+      setSessionStatus('ready');
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendAdvisorMessage = useCallback(
     (text: string) => {
@@ -410,12 +448,6 @@ export default function Session() {
     [toast]
   );
 
-  const sendTextMessage = () => {
-    if (!textInput.trim()) return;
-    sendAdvisorMessage(textInput.trim());
-    setTextInput('');
-  };
-
   const handleEndSession = async () => {
     setIsEnding(true);
     endingRef.current = true;
@@ -434,6 +466,7 @@ export default function Session() {
     try {
       // Stop speech
       stopAudio();
+      isTalkingRef.current = false;
       recognitionRef.current?.stop();
 
       // Stop recording & upload
@@ -473,14 +506,6 @@ export default function Session() {
       console.error('End session error:', err);
       toast.error(`Failed to end session: ${getErrorMessage(err)}`);
       setIsEnding(false);
-    }
-  };
-
-  const toggleMic = () => {
-    if (sessionStatus === 'listening') {
-      stopListening();
-    } else if (sessionStatus === 'ready' || sessionStatus === 'client_speaking') {
-      startListening();
     }
   };
 
@@ -697,51 +722,32 @@ export default function Session() {
               </span>
             </div>
 
-            <div className="flex items-center gap-4">
-              {/* Mic button */}
-              <button
-                onClick={toggleMic}
-                disabled={sessionStatus === 'processing' || sessionStatus === 'connecting' || sessionStatus === 'ended'}
-                className={`w-14 h-14 rounded-full flex-shrink-0 flex items-center justify-center transition-all shadow-lg ${
-                  sessionStatus === 'listening'
-                    ? 'bg-red-600 hover:bg-red-700 shadow-red-500/30 scale-110 animate-pulse'
-                    : sessionStatus === 'processing' || sessionStatus === 'connecting'
-                    ? 'bg-navy-700 cursor-not-allowed opacity-50'
-                    : 'bg-gold-500 hover:bg-gold-400 shadow-gold-500/30'
-                }`}
-              >
-                {sessionStatus === 'listening' ? (
-                  <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 text-white">
-                    <rect x="6" y="4" width="4" height="16" rx="2" />
-                    <rect x="14" y="4" width="4" height="16" rx="2" />
+            {/* Two explicit talking controls. The advisor decides when to
+                start and stop — the mic does NOT auto-cut on silence. */}
+            <div className="flex items-center justify-center">
+              {sessionStatus === 'listening' ? (
+                <button
+                  onClick={stopListening}
+                  className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white font-semibold px-8 py-3 rounded-lg text-base transition-all shadow-lg shadow-red-500/30"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                    <rect x="6" y="6" width="12" height="12" rx="2" />
                   </svg>
-                ) : (
-                  <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 text-navy-900">
+                  Stop Talking
+                </button>
+              ) : (
+                <button
+                  onClick={startListening}
+                  disabled={sessionStatus === 'processing' || sessionStatus === 'connecting' || sessionStatus === 'ended'}
+                  className="flex items-center gap-2 bg-gold-500 hover:bg-gold-400 disabled:opacity-50 disabled:cursor-not-allowed text-navy-900 font-bold px-8 py-3 rounded-lg text-base transition-all shadow-lg shadow-gold-500/30"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
                     <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
                     <path d="M19 10v2a7 7 0 01-14 0v-2H3v2a9 9 0 008 8.94V23h2v-2.06A9 9 0 0021 12v-2h-2z" />
                   </svg>
-                )}
-              </button>
-
-              {/* Text input fallback */}
-              <div className="flex-1 flex gap-2">
-                <input
-                  type="text"
-                  value={textInput}
-                  onChange={(e) => setTextInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') sendTextMessage(); }}
-                  placeholder="Type your message (fallback for voice)..."
-                  disabled={sessionStatus === 'processing' || sessionStatus === 'ended'}
-                  className="flex-1 bg-navy-900 border border-navy-600 rounded-lg px-4 py-2.5 text-white text-sm placeholder-slate-600 focus:outline-none focus:border-gold-500 disabled:opacity-50"
-                />
-                <button
-                  onClick={sendTextMessage}
-                  disabled={!textInput.trim() || sessionStatus === 'processing' || sessionStatus === 'ended'}
-                  className="px-4 py-2.5 bg-gold-500 hover:bg-gold-400 disabled:opacity-40 disabled:cursor-not-allowed text-navy-900 font-bold rounded-lg text-sm transition-colors"
-                >
-                  Send
+                  Start Talking
                 </button>
-              </div>
+              )}
             </div>
           </div>
         </div>

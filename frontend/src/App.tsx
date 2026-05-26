@@ -17,6 +17,9 @@ import QuestionnaireEditor from './pages/admin/QuestionnaireEditor';
 import AdminSessionReview from './pages/admin/AdminSessionReview';
 import PresentationManagement from './pages/admin/PresentationManagement';
 import ScriptEditor from './pages/admin/ScriptEditor';
+import SessionProfiles from './pages/admin/SessionProfiles';
+import AssignmentManager from './pages/admin/AssignmentManager';
+import StartAssignment from './pages/StartAssignment';
 
 function LoadingScreen() {
   return (
@@ -204,6 +207,34 @@ export default function App() {
         element={
           <ProtectedRoute adminOnly>
             <Layout><ScriptEditor /></Layout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/admin/profiles"
+        element={
+          <ProtectedRoute adminOnly>
+            <Layout><SessionProfiles /></Layout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/admin/assignments"
+        element={
+          <ProtectedRoute adminOnly>
+            <Layout><AssignmentManager /></Layout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Advisor: start a session from an admin-assigned profile */}
+      <Route
+        path="/sessions/start/:assignmentId"
+        element={
+          <ProtectedRoute advisorOnly>
+            <Layout><StartAssignment /></Layout>
           </ProtectedRoute>
         }
       />

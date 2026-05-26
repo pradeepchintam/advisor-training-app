@@ -65,6 +65,35 @@ export interface AnalysisCategory {
   feedback: string;
 }
 
+/** Score can be null when the underlying artifact (script/slides) is absent. */
+export interface OptionalAnalysisCategory {
+  score: number | null;
+  feedback: string;
+}
+
+/** Objective delivery / prosody metrics computed from the ASR transcript. */
+export interface DeliveryMetrics {
+  duration_seconds: number;
+  advisor_words: number;
+  client_words: number;
+  advisor_spoken_seconds: number;
+  advisor_wpm: number | null;
+  talk_time_ratio_advisor: number | null;
+  fillers_total: number;
+  fillers_per_minute: number | null;
+  fillers_top: Array<[string, number]>;
+  long_pauses_seconds: number[];
+  long_pause_count: number;
+}
+
+/** Soft signals from sampling video frames during analysis. */
+export interface VideoAnalysis {
+  score: number | null;
+  feedback: string;
+  observations?: string[];
+  concerns?: string[];
+}
+
 export interface SessionAnalysis {
   overall_score: number;
   categories: {
@@ -76,6 +105,16 @@ export interface SessionAnalysis {
     communication_skills: AnalysisCategory;
     closing_skills: AnalysisCategory;
   };
+  /** How closely the advisor followed the active training script. */
+  script_adherence?: OptionalAnalysisCategory | null;
+  /** How well the advisor walked through the presentation slides. */
+  slide_walkthrough?: OptionalAnalysisCategory | null;
+  /** Objective pace / filler / talk-time signal from ASR. */
+  delivery_metrics?: DeliveryMetrics | null;
+  /** Vision-pass read on body language / framing. */
+  video_analysis?: VideoAnalysis | null;
+  /** True when AWS Transcribe re-transcribed the audio for the analyzer. */
+  asr_transcript_used?: boolean;
   strengths: string[];
   areas_for_improvement: string[];
   compliance_flags: string[];
@@ -123,6 +162,9 @@ export interface SessionPublic {
   started_at: string;
   ended_at: string | null;
   overall_score?: number | null;
+  source?: 'assigned' | 'self_initiated';
+  assignment_id?: string | null;
+  profile_name?: string | null;
 }
 
 export interface SessionDetail extends Session {
@@ -179,4 +221,43 @@ export interface TrainingScript {
 export interface SlideEvent {
   slide_number: number;
   timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
+// Session profiles + assignments
+// ---------------------------------------------------------------------------
+export interface SessionProfile {
+  id: string;
+  name: string;
+  description?: string | null;
+  persona: ClientPersona;
+  created_by?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AssignmentStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
+
+export interface Assignment {
+  id: string;
+  profile_id: string;
+  profile_name: string;
+  profile_description?: string | null;
+  persona: ClientPersona;
+  advisor_id: string;
+  advisor_name?: string | null;
+  assigned_by?: string | null;
+  assigned_by_name?: string | null;
+  assigned_date: string; // YYYY-MM-DD
+  target_date: string;   // YYYY-MM-DD
+  status: AssignmentStatus;
+  created_at: string;
+  session_id?: string | null;
+}
+
+export interface MyAssignments {
+  today: Assignment[];
+  upcoming: Assignment[];
+  past: Assignment[];
 }

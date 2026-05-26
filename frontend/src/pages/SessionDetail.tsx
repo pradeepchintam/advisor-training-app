@@ -40,6 +40,154 @@ function CategoryBar({
   );
 }
 
+/**
+ * Standalone card for the two "key criteria" — script adherence and slide
+ * walkthrough. Score may be null when the artifact is absent (no active
+ * script / no slides shown); we render an N/A pill in that case.
+ */
+function KeyCriterionCard({
+  label,
+  icon,
+  score,
+  feedback,
+}: {
+  label: string;
+  icon: string;
+  score: number | null | undefined;
+  feedback: string | undefined;
+}) {
+  const hasScore = typeof score === 'number';
+  const color = !hasScore
+    ? 'bg-navy-700'
+    : score! >= 8
+    ? 'bg-green-500'
+    : score! >= 5
+    ? 'bg-yellow-500'
+    : 'bg-red-500';
+  const textColor = !hasScore
+    ? 'text-slate-400'
+    : score! >= 8
+    ? 'text-green-400'
+    : score! >= 5
+    ? 'text-yellow-400'
+    : 'text-red-400';
+
+  return (
+    <div className="bg-navy-800 border border-navy-700 rounded-xl p-5">
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xl">{icon}</span>
+          <h3 className="font-semibold text-white">{label}</h3>
+        </div>
+        {hasScore ? (
+          <span className={`text-lg font-bold ${textColor}`}>{score!.toFixed(1)}/10</span>
+        ) : (
+          <span className="text-xs uppercase tracking-wider text-slate-500 bg-navy-900 px-2 py-1 rounded">
+            N/A
+          </span>
+        )}
+      </div>
+      {hasScore && (
+        <div className="h-2 bg-navy-900 rounded-full overflow-hidden mb-3">
+          <div
+            className={`h-full rounded-full transition-all duration-700 ${color}`}
+            style={{ width: `${(score! / 10) * 100}%` }}
+          />
+        </div>
+      )}
+      {feedback && <p className="text-slate-400 text-sm leading-relaxed">{feedback}</p>}
+    </div>
+  );
+}
+
+/**
+ * Read-only display of objective speaking metrics derived from the ASR
+ * re-transcription (AWS Transcribe). All fields tolerate null gracefully —
+ * older sessions that pre-date Phase B won't have this block at all.
+ */
+function DeliveryMetricsCard({ metrics }: { metrics: import('../types').DeliveryMetrics }) {
+  const wpm = metrics.advisor_wpm;
+  const wpmTone =
+    wpm == null ? 'text-slate-400'
+    : wpm < 110 ? 'text-yellow-400'         // slow
+    : wpm > 180 ? 'text-yellow-400'         // fast
+    : 'text-green-400';                     // 110-180 is healthy
+
+  const fillers = metrics.fillers_per_minute;
+  const fillerTone =
+    fillers == null ? 'text-slate-400'
+    : fillers <= 1 ? 'text-green-400'
+    : fillers <= 3 ? 'text-yellow-400'
+    : 'text-red-400';
+
+  const talkPct = metrics.talk_time_ratio_advisor != null
+    ? Math.round(metrics.talk_time_ratio_advisor * 100)
+    : null;
+
+  return (
+    <div className="bg-navy-800 border border-navy-700 rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <span className="text-xl">🎙️</span>
+        <h3 className="font-semibold text-white">Delivery Metrics</h3>
+        <span className="text-[10px] uppercase tracking-wider text-slate-500 bg-navy-900 px-1.5 py-0.5 rounded ml-1">
+          ASR-derived
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-navy-900 rounded-lg p-3">
+          <div className="text-xs text-slate-500 uppercase tracking-wider">Pace</div>
+          <div className={`text-xl font-bold mt-1 ${wpmTone}`}>
+            {wpm != null ? `${wpm}` : '—'}
+            <span className="text-xs text-slate-500 font-normal ml-1">wpm</span>
+          </div>
+          <div className="text-[10px] text-slate-600 mt-0.5">healthy ≈ 110–180</div>
+        </div>
+
+        <div className="bg-navy-900 rounded-lg p-3">
+          <div className="text-xs text-slate-500 uppercase tracking-wider">Fillers</div>
+          <div className={`text-xl font-bold mt-1 ${fillerTone}`}>
+            {fillers != null ? `${fillers}` : '—'}
+            <span className="text-xs text-slate-500 font-normal ml-1">/min</span>
+          </div>
+          <div className="text-[10px] text-slate-600 mt-0.5">
+            {metrics.fillers_total} total
+          </div>
+        </div>
+
+        <div className="bg-navy-900 rounded-lg p-3">
+          <div className="text-xs text-slate-500 uppercase tracking-wider">Talk Time</div>
+          <div className="text-xl font-bold mt-1 text-slate-200">
+            {talkPct != null ? `${talkPct}%` : '—'}
+          </div>
+          <div className="text-[10px] text-slate-600 mt-0.5">advisor share</div>
+        </div>
+
+        <div className="bg-navy-900 rounded-lg p-3">
+          <div className="text-xs text-slate-500 uppercase tracking-wider">Long Pauses</div>
+          <div className="text-xl font-bold mt-1 text-slate-200">
+            {metrics.long_pause_count}
+          </div>
+          <div className="text-[10px] text-slate-600 mt-0.5">≥ 2 s</div>
+        </div>
+      </div>
+
+      {metrics.fillers_top && metrics.fillers_top.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {metrics.fillers_top.map(([word, count]) => (
+            <span
+              key={word}
+              className="inline-flex items-center gap-1 px-2 py-0.5 bg-navy-900 rounded text-xs text-slate-400 border border-navy-700"
+            >
+              {word} <span className="text-slate-600">×{count}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', {
     weekday: 'short',
@@ -227,6 +375,37 @@ export default function SessionDetail() {
                   </div>
                 </div>
               </div>
+
+              {/* Key criteria: script adherence + slide walkthrough */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <KeyCriterionCard
+                  label="Script Adherence"
+                  icon="📋"
+                  score={analysis.script_adherence?.score}
+                  feedback={analysis.script_adherence?.feedback}
+                />
+                <KeyCriterionCard
+                  label="Slide Walkthrough"
+                  icon="🖼️"
+                  score={analysis.slide_walkthrough?.score}
+                  feedback={analysis.slide_walkthrough?.feedback}
+                />
+              </div>
+
+              {/* Delivery metrics (objective ASR-derived signals) */}
+              {analysis.delivery_metrics && (
+                <DeliveryMetricsCard metrics={analysis.delivery_metrics} />
+              )}
+
+              {/* Video presence card (best-effort vision pass) */}
+              {analysis.video_analysis && (
+                <KeyCriterionCard
+                  label="Video Presence"
+                  icon="🎥"
+                  score={analysis.video_analysis.score}
+                  feedback={analysis.video_analysis.feedback}
+                />
+              )}
 
               {/* Category scores */}
               <div className="bg-navy-800 border border-navy-700 rounded-xl p-6">

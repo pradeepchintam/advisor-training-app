@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { sessionsApi } from '../services/api';
-import type { SessionPublic } from '../types';
+import { sessionsApi, assignmentsApi } from '../services/api';
+import type { Assignment, MyAssignments, SessionPublic } from '../types';
 import PersonaBadge from '../components/PersonaBadge';
 import { useToast } from '../components/Toast';
 import { getErrorMessage } from '../utils/errors';
@@ -43,11 +43,57 @@ function formatDuration(start: string, end: string | null) {
   return `${mins}m`;
 }
 
+function todayIso(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function AssignmentCard({ a, overdue }: { a: Assignment; overdue: boolean }) {
+  return (
+    <div
+      className={`bg-navy-800 border rounded-xl p-5 ${
+        overdue ? 'border-red-500/40' : 'border-gold-500/30'
+      }`}
+    >
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex-1 min-w-0">
+          <div className="text-xs text-gold-400 uppercase tracking-wider font-semibold mb-0.5">
+            {a.profile_name}
+          </div>
+          <div className="text-white font-medium truncate">
+            {a.persona.name || a.profile_name}
+          </div>
+          <div className="text-slate-500 text-xs mt-0.5">
+            {a.persona.age_group?.replace('_', ' ')} · {a.persona.financial_situation} ·{' '}
+            {a.persona.personality_type}
+          </div>
+        </div>
+        {overdue && (
+          <span className="inline-flex px-2 py-0.5 rounded bg-red-900/50 text-red-300 text-[10px] uppercase tracking-wider font-semibold">
+            Overdue
+          </span>
+        )}
+      </div>
+      <div className="flex items-center justify-between text-xs text-slate-500 mb-4">
+        <span>Due {a.target_date}</span>
+        {a.assigned_by_name && <span>by {a.assigned_by_name}</span>}
+      </div>
+      <Link
+        to={`/sessions/start/${a.id}`}
+        className="block w-full text-center bg-gold-500 hover:bg-gold-400 text-navy-900 font-bold py-2 rounded-lg transition-colors text-sm"
+      >
+        Start Session →
+      </Link>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const { user, isAdmin } = useAuth();
   const toast = useToast();
   const [sessions, setSessions] = useState<SessionPublic[]>([]);
   const [loading, setLoading] = useState(true);
+  const [myAssignments, setMyAssignments] = useState<MyAssignments | null>(null);
 
   useEffect(() => {
     sessionsApi
@@ -58,8 +104,21 @@ export default function Dashboard() {
         toast.error(`Failed to load dashboard: ${getErrorMessage(err)}`);
       })
       .finally(() => setLoading(false));
+
+    // Assignments only matter for advisors. Admins skip this fetch.
+    if (!isAdmin) {
+      assignmentsApi
+        .listMine()
+        .then(setMyAssignments)
+        .catch((err) => {
+          // Non-fatal — dashboard still renders without the assignment sections
+          console.warn('Failed to load assignments:', err);
+        });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const today = todayIso();
 
   const now = new Date();
   const thisMonthSessions = sessions.filter((s) => {
@@ -92,14 +151,57 @@ export default function Dashboard() {
         </div>
         <Link
           to="/sessions/new"
-          className="inline-flex items-center gap-2 bg-gold-500 hover:bg-gold-400 text-navy-900 font-bold px-5 py-2.5 rounded-lg transition-colors shadow-lg shadow-gold-500/20"
+          className="inline-flex items-center gap-2 bg-navy-700 hover:bg-navy-600 text-slate-200 font-bold px-5 py-2.5 rounded-lg transition-colors border border-navy-600"
         >
           <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
             <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
           </svg>
-          Start New Session
+          Start Additional Session
         </Link>
       </div>
+
+      {/* Assigned sessions — advisors only */}
+      {!isAdmin && myAssignments && (
+        <>
+          {/* Today's assignments */}
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-white">Today's Assigned Sessions</h2>
+              <span className="text-xs text-slate-500">
+                {myAssignments.today.length} {myAssignments.today.length === 1 ? 'session' : 'sessions'}
+              </span>
+            </div>
+            {myAssignments.today.length === 0 ? (
+              <div className="bg-navy-800 border border-navy-700 rounded-xl px-5 py-6 text-center text-slate-500 text-sm">
+                Nothing assigned for today. Nice — you're caught up.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {myAssignments.today.map((a) => (
+                  <AssignmentCard key={a.id} a={a} overdue={a.target_date < today} />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Upcoming assignments */}
+          {myAssignments.upcoming.length > 0 && (
+            <div className="mb-8">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-lg font-semibold text-white">Upcoming Sessions</h2>
+                <span className="text-xs text-slate-500">
+                  {myAssignments.upcoming.length} scheduled
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {myAssignments.upcoming.slice(0, 6).map((a) => (
+                  <AssignmentCard key={a.id} a={a} overdue={false} />
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4 mb-8">

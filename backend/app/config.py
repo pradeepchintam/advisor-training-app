@@ -14,6 +14,17 @@ class Settings(BaseSettings):
     AWS_REGION: str = ""
     PRESIGNED_URL_TTL: int = 300  # seconds
 
+    # Bucket used for staging media that AWS Transcribe / vision frames consume.
+    # Distinct from S3_BUCKET so you can keep recordings local while still
+    # uploading short-lived analysis artifacts to S3.
+    ANALYSIS_S3_BUCKET: str = ""
+    # Max minutes of audio we'll re-transcribe (safety limit; cost guard).
+    TRANSCRIBE_MAX_MINUTES: int = 60
+    # Polling cadence for AWS Transcribe job status.
+    TRANSCRIBE_POLL_SECONDS: float = 3.0
+    # Number of evenly-spaced video frames to sample for vision analysis.
+    VISION_FRAME_COUNT: int = 6
+
     # AWS Polly voices (neural). Override per-deployment.
     POLLY_VOICE_FEMALE: str = "Joanna"
     POLLY_VOICE_MALE: str = "Matthew"

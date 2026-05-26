@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user, require_advisor, require_advisor_or_admin
 from app.database import get_db
-from app.models import TrainingSession, User
+from app.models import SessionAssignment, SessionProfile, TrainingSession, User
 from app.schemas import ClientPersona, SessionCreate, SessionDetail, SessionPublic
 from app.services.persona_service import generate_persona_details
 from app.services.storage_service import get_recording_path, get_recording_url, save_recording
@@ -41,9 +41,15 @@ async def _load_active_script_content(db: AsyncSession) -> str | None:
 
 
 async def _run_analysis(session_id: str) -> None:
-    """Background task: run Claude analysis on the session."""
+    """Background task: enrich the session with ASR + prosody + vision signals,
+    then run the Claude analyzer."""
+    import logging
+    from pathlib import Path
+
     from app.database import AsyncSessionLocal
     from app.services.claude_service import analyze_session
+
+    log = logging.getLogger("trajan.analysis")
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -52,13 +58,84 @@ async def _run_analysis(session_id: str) -> None:
         session = result.scalar_one_or_none()
         if session is None:
             return
+
+        # ------------------------------------------------------------------
+        # 1) Re-transcribe (best-effort) for an accurate, filler-aware transcript.
+        # ------------------------------------------------------------------
+        asr_transcript: str | None = None
+        delivery_metrics: dict | None = None
+        local_path_for_vision: str | None = None
+        recording_path = session.recording_path
+
+        if recording_path:
+            try:
+                from app.services.transcription_service import (
+                    transcribe_recording, download_recording_to_tmp,
+                    cleanup_analysis_artifacts,
+                )
+                from app.services.prosody_service import compute_delivery_metrics
+
+                transcription = await transcribe_recording(recording_path, session_id)
+                if transcription:
+                    asr_transcript = transcription.get("transcript") or None
+                    delivery_metrics = compute_delivery_metrics(transcription)
+
+                # Keep a local copy around for the vision pass (avoids two downloads).
+                local_path_for_vision = await download_recording_to_tmp(recording_path)
+                # Schedule cleanup of staged S3 inputs; non-blocking.
+                try:
+                    await cleanup_analysis_artifacts(session_id)
+                except Exception:
+                    pass
+            except Exception as e:
+                log.warning("Re-transcription failed for %s: %s", session_id, e)
+
+        # ------------------------------------------------------------------
+        # 2) Vision pass (best-effort) — soft signal on body language / framing.
+        # ------------------------------------------------------------------
+        video_analysis: dict | None = None
+        try:
+            if local_path_for_vision and Path(local_path_for_vision).exists():
+                from app.services.vision_service import analyze_video
+                video_analysis = await analyze_video(local_path_for_vision)
+        except Exception as e:
+            log.warning("Vision pass failed for %s: %s", session_id, e)
+        finally:
+            # If we downloaded to /tmp, clean up.
+            if (
+                local_path_for_vision
+                and local_path_for_vision.startswith("/tmp/")
+                and Path(local_path_for_vision).exists()
+            ):
+                try:
+                    Path(local_path_for_vision).unlink()
+                except OSError:
+                    pass
+
+        # ------------------------------------------------------------------
+        # 3) Run Claude analysis with all signals folded in.
+        # ------------------------------------------------------------------
         try:
             script_content = await _load_active_script_content(db)
-            analysis = await analyze_session(session, script_content=script_content)
+            analysis = await analyze_session(
+                session,
+                script_content=script_content,
+                asr_transcript=asr_transcript,
+                delivery_metrics=delivery_metrics,
+            )
+            # Annotate the analysis with the ancillary signals so the UI can
+            # render them without re-deriving anything.
+            if delivery_metrics is not None:
+                analysis["delivery_metrics"] = delivery_metrics
+            if video_analysis is not None:
+                analysis["video_analysis"] = video_analysis
+            if asr_transcript is not None:
+                analysis["asr_transcript_used"] = True
+
             session.analysis = analysis
             await db.commit()
         except Exception as e:
-            # Mark error but don't crash
+            log.exception("Analysis failed for session %s: %s", session_id, e)
             session.status = "error"
             await db.commit()
 
@@ -66,6 +143,7 @@ async def _run_analysis(session_id: str) -> None:
 @router.get("", response_model=list[SessionPublic])
 async def list_sessions(
     advisor_id: str | None = None,
+    source: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_advisor_or_admin),
 ):
@@ -77,6 +155,9 @@ async def list_sessions(
     else:
         query = query.where(TrainingSession.advisor_id == current_user.id)
 
+    if source in ("assigned", "self_initiated"):
+        query = query.where(TrainingSession.source == source)
+
     result = await db.execute(query)
     sessions = result.scalars().all()
 
@@ -87,6 +168,24 @@ async def list_sessions(
         advisor_map = {u.id: u.name for u in users_result.scalars().all()}
     else:
         advisor_map = {}
+
+    # Resolve profile_name for assigned sessions in one query
+    assignment_ids = list({s.assignment_id for s in sessions if s.assignment_id})
+    profile_name_by_assignment: dict[str, str] = {}
+    if assignment_ids:
+        a_result = await db.execute(
+            select(SessionAssignment).where(SessionAssignment.id.in_(assignment_ids))
+        )
+        assignments = a_result.scalars().all()
+        profile_ids = list({a.profile_id for a in assignments})
+        if profile_ids:
+            p_result = await db.execute(
+                select(SessionProfile).where(SessionProfile.id.in_(profile_ids))
+            )
+            profiles_by_id = {p.id: p.name for p in p_result.scalars().all()}
+            profile_name_by_assignment = {
+                a.id: profiles_by_id.get(a.profile_id) for a in assignments
+            }
 
     return [
         SessionPublic(
@@ -100,6 +199,9 @@ async def list_sessions(
             ended_at=s.ended_at,
             persona=ClientPersona(**s.persona),
             overall_score=s.analysis.get("overall_score") if s.analysis else None,
+            source=s.source or "self_initiated",
+            assignment_id=s.assignment_id,
+            profile_name=profile_name_by_assignment.get(s.assignment_id) if s.assignment_id else None,
         )
         for s in sessions
     ]
@@ -111,12 +213,72 @@ async def create_session(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_advisor),
 ):
-    persona = payload.persona
+    """Create a training session.
 
-    # Generate a complete persona if needed
-    if not persona.name or not persona.backstory:
-        completed = generate_persona_details(persona.model_dump())
-        persona = completed
+    Two paths:
+      • Assigned — payload.assignment_id is provided. Persona is loaded from the
+        linked SessionProfile; the advisor cannot override it. source='assigned'.
+      • Self-initiated — payload.persona is provided directly. source='self_initiated'.
+    """
+    profile_name: str | None = None
+    source = "self_initiated"
+    assignment_id: str | None = None
+
+    if payload.assignment_id:
+        # --- Assigned flow ---------------------------------------------------
+        a_result = await db.execute(
+            select(SessionAssignment).where(SessionAssignment.id == payload.assignment_id)
+        )
+        assignment = a_result.scalar_one_or_none()
+        if assignment is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Assignment not found",
+            )
+        if assignment.advisor_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This assignment belongs to another advisor",
+            )
+        if assignment.status == "cancelled":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This assignment was cancelled by the admin",
+            )
+
+        p_result = await db.execute(
+            select(SessionProfile).where(SessionProfile.id == assignment.profile_id)
+        )
+        profile = p_result.scalar_one_or_none()
+        if profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Linked profile no longer exists",
+            )
+
+        persona = ClientPersona(**profile.persona)
+        profile_name = profile.name
+        source = "assigned"
+        assignment_id = assignment.id
+
+        # Persona may be partial (created from picker without name/backstory)
+        if not persona.name or not persona.backstory:
+            persona = generate_persona_details(persona.model_dump())
+
+        # Mark the assignment as in_progress (idempotent for repeat starts)
+        if assignment.status == "pending":
+            assignment.status = "in_progress"
+
+    else:
+        # --- Self-initiated flow --------------------------------------------
+        if payload.persona is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="persona is required when no assignment_id is provided",
+            )
+        persona = payload.persona
+        if not persona.name or not persona.backstory:
+            persona = generate_persona_details(persona.model_dump())
 
     # Fetch client image
     image_url = await _fetch_client_image(persona.gender)
@@ -130,6 +292,8 @@ async def create_session(
         status="active",
         conversation=[],
         started_at=datetime.now(timezone.utc),
+        source=source,
+        assignment_id=assignment_id,
     )
     db.add(session)
     await db.flush()
@@ -144,6 +308,9 @@ async def create_session(
         started_at=session.started_at,
         ended_at=session.ended_at,
         persona=ClientPersona(**session.persona),
+        source=session.source,
+        assignment_id=session.assignment_id,
+        profile_name=profile_name,
     )
 
 
@@ -165,6 +332,19 @@ async def get_session(
 
     from app.schemas import ConversationMessage
 
+    profile_name: str | None = None
+    if session.assignment_id:
+        a_result = await db.execute(
+            select(SessionAssignment).where(SessionAssignment.id == session.assignment_id)
+        )
+        a = a_result.scalar_one_or_none()
+        if a is not None:
+            p_result = await db.execute(
+                select(SessionProfile).where(SessionProfile.id == a.profile_id)
+            )
+            p = p_result.scalar_one_or_none()
+            profile_name = p.name if p else None
+
     return SessionDetail(
         id=session.id,
         advisor_id=session.advisor_id,
@@ -177,6 +357,9 @@ async def get_session(
         analysis=session.analysis,
         started_at=session.started_at,
         ended_at=session.ended_at,
+        source=session.source or "self_initiated",
+        assignment_id=session.assignment_id,
+        profile_name=profile_name,
     )
 
 
@@ -211,6 +394,16 @@ async def end_session(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot end session in status '{session.status}'",
         )
+
+    # If this session is fulfilling an admin assignment, mark it complete too.
+    if session.assignment_id:
+        a_result = await db.execute(
+            select(SessionAssignment).where(SessionAssignment.id == session.assignment_id)
+        )
+        assignment = a_result.scalar_one_or_none()
+        if assignment is not None and assignment.status in ("pending", "in_progress"):
+            assignment.status = "completed"
+            await db.commit()
 
     # Kick off analysis in background
     background_tasks.add_task(_run_analysis, session_id)

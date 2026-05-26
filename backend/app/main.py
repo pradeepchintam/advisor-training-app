@@ -14,6 +14,8 @@ from app.routers.questionnaire_router import router as questionnaire_router
 from app.routers.presentations_router import router as presentations_router
 from app.routers.scripts_router import router as scripts_router
 from app.routers.tts_router import router as tts_router
+from app.routers.profiles_router import router as profiles_router
+from app.routers.assignments_router import router as assignments_router
 
 app = FastAPI(
     title="Trajan Wealth Advisor Trainer",
@@ -43,6 +45,8 @@ app.include_router(questionnaire_router, prefix="/api/questionnaire", tags=["que
 app.include_router(presentations_router, prefix="/api/presentations", tags=["presentations"])
 app.include_router(scripts_router, prefix="/api/scripts", tags=["scripts"])
 app.include_router(tts_router, prefix="/api/tts", tags=["tts"])
+app.include_router(profiles_router, prefix="/api/profiles", tags=["profiles"])
+app.include_router(assignments_router, prefix="/api/assignments", tags=["assignments"])
 
 
 # ---------------------------------------------------------------------------

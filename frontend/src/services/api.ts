@@ -9,6 +9,10 @@ import type {
   QuestionnaireContent,
   Presentation,
   TrainingScript,
+  SessionProfile,
+  Assignment,
+  MyAssignments,
+  AssignmentStatus,
 } from '../types';
 
 const api = axios.create({
@@ -18,11 +22,25 @@ const api = axios.create({
   },
 });
 
-// Request interceptor: attach Bearer token
+// Request interceptor: attach Bearer token, and DROP the default JSON
+// Content-Type when the payload is FormData. Axios v1.x respects the
+// instance-level default Content-Type even for multipart payloads, which
+// would otherwise cause FastAPI to reject the upload as malformed JSON
+// (HTTP 422). Deleting it here lets the browser/axios set the correct
+// `multipart/form-data; boundary=…` automatically.
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('auth_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    // Remove any preset Content-Type so axios/browser picks the multipart one.
+    if (config.headers && 'Content-Type' in config.headers) {
+      delete (config.headers as Record<string, unknown>)['Content-Type'];
+    }
+    if (config.headers && 'content-type' in config.headers) {
+      delete (config.headers as Record<string, unknown>)['content-type'];
+    }
   }
   return config;
 });
@@ -78,12 +96,17 @@ export const advisorsApi = {
 
 // Sessions
 export const sessionsApi = {
-  list: async (): Promise<SessionPublic[]> => {
-    const response = await api.get('/sessions');
+  list: async (params?: { source?: 'assigned' | 'self_initiated'; advisor_id?: string }): Promise<SessionPublic[]> => {
+    const response = await api.get('/sessions', { params });
     return response.data;
   },
   create: async (persona: Partial<ClientPersona>): Promise<SessionDetail> => {
     const response = await api.post('/sessions', { persona });
+    return response.data;
+  },
+  /** Start a session that the admin assigned. Persona is locked server-side. */
+  createFromAssignment: async (assignmentId: string): Promise<SessionDetail> => {
+    const response = await api.post('/sessions', { assignment_id: assignmentId });
     return response.data;
   },
   get: async (id: string): Promise<SessionDetail> => {
@@ -208,6 +231,62 @@ export const scriptsApi = {
   },
   delete: async (id: string): Promise<void> => {
     await api.delete(`/scripts/${id}`);
+  },
+};
+
+// Session profiles (admin)
+export const profilesApi = {
+  list: async (includeInactive = false): Promise<SessionProfile[]> => {
+    const response = await api.get('/profiles', {
+      params: { include_inactive: includeInactive },
+    });
+    return response.data;
+  },
+  get: async (id: string): Promise<SessionProfile> => {
+    const response = await api.get(`/profiles/${id}`);
+    return response.data;
+  },
+  create: async (data: { name: string; description?: string; persona: Partial<ClientPersona> }): Promise<SessionProfile> => {
+    const response = await api.post('/profiles', data);
+    return response.data;
+  },
+  update: async (id: string, data: Partial<{ name: string; description: string; persona: Partial<ClientPersona>; is_active: boolean }>): Promise<SessionProfile> => {
+    const response = await api.patch(`/profiles/${id}`, data);
+    return response.data;
+  },
+  remove: async (id: string): Promise<void> => {
+    await api.delete(`/profiles/${id}`);
+  },
+};
+
+// Assignments (admin creates, advisor lists own)
+export const assignmentsApi = {
+  /** Admin: list all assignments, optionally filtered. */
+  list: async (params?: { advisor_id?: string; status_filter?: AssignmentStatus }): Promise<Assignment[]> => {
+    const response = await api.get('/assignments', { params });
+    return response.data;
+  },
+  /** Admin: create one assignment per advisor in advisor_ids (fanout). */
+  create: async (data: {
+    profile_id: string;
+    advisor_ids: string[];
+    assigned_date: string;
+    target_date: string;
+  }): Promise<Assignment[]> => {
+    const response = await api.post('/assignments', data);
+    return response.data;
+  },
+  /** Advisor: list my own assignments, grouped today / upcoming / past. */
+  listMine: async (): Promise<MyAssignments> => {
+    const response = await api.get('/assignments/me');
+    return response.data;
+  },
+  update: async (id: string, data: Partial<{ assigned_date: string; target_date: string; status: AssignmentStatus }>): Promise<Assignment> => {
+    const response = await api.patch(`/assignments/${id}`, data);
+    return response.data;
+  },
+  cancel: async (id: string): Promise<void> => {
+    await api.delete(`/assignments/${id}`);
   },
 };
 
