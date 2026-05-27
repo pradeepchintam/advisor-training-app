@@ -13,45 +13,85 @@ from app.auth import require_admin, require_advisor_or_admin
 from app.database import get_db
 from app.models import Presentation, User
 from app.schemas import PresentationPublic
+from app.services.deck_slots import ALL_SLOTS, SLOT_FIRST
 from app.services.pptx_service import (
     convert_and_store,
     delete_presentation_files,
+    delete_script_pdf,
+    get_script_pdf_bytes,
     get_slide_bytes,
+    store_script_pdf,
 )
 
 router = APIRouter()
 
+# Max size for an attached script PDF.
+_MAX_SCRIPT_BYTES = 25 * 1024 * 1024  # 25 MB
+
+
+def _validate_slot(slot: str) -> str:
+    if slot not in ALL_SLOTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid slot '{slot}'. Must be one of: {', '.join(ALL_SLOTS)}",
+        )
+    return slot
+
+
+def _validate_pdf(upload: UploadFile) -> None:
+    if not upload.filename or not upload.filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Script must be a .pdf file",
+        )
+
 
 @router.get("/active", response_model=PresentationPublic)
 async def get_active_presentation(
+    slot: str = SLOT_FIRST,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_advisor_or_admin),
 ):
-    """Advisors call this at session start to know how many slides + the active deck id."""
-    result = await db.execute(select(Presentation).where(Presentation.is_active == True))
+    """Active deck for a given slot (defaults to the first-appointment slot)."""
+    _validate_slot(slot)
+    result = await db.execute(
+        select(Presentation).where(
+            Presentation.is_active == True, Presentation.slot == slot  # noqa: E712
+        )
+    )
     p = result.scalar_one_or_none()
     if p is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active presentation")
-    return PresentationPublic.model_validate(p)
+    return PresentationPublic.from_model(p)
 
 
 @router.get("", response_model=list[PresentationPublic])
 async def list_presentations(
+    slot: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    result = await db.execute(select(Presentation).order_by(Presentation.version.desc()))
-    return [PresentationPublic.model_validate(p) for p in result.scalars().all()]
+    q = select(Presentation).order_by(Presentation.version.desc())
+    if slot:
+        _validate_slot(slot)
+        q = q.where(Presentation.slot == slot)
+    result = await db.execute(q)
+    return [PresentationPublic.from_model(p) for p in result.scalars().all()]
 
 
 @router.post("", response_model=PresentationPublic, status_code=status.HTTP_201_CREATED)
 async def upload_presentation(
     title: str = Form(...),
+    slot: str = Form(SLOT_FIRST),
     file: UploadFile = File(...),
+    script: UploadFile | None = File(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    """Upload a .pptx. Bumps version, marks new version active, deactivates older ones."""
+    """Upload a .pptx with an optional attached .pdf script into a deck slot.
+    Bumps version, marks new version active for that slot, deactivates older
+    ones in the SAME slot."""
+    _validate_slot(slot)
     if not file.filename or not file.filename.lower().endswith(".pptx"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -61,8 +101,23 @@ async def upload_presentation(
     if len(content) > 50 * 1024 * 1024:  # 50 MB cap
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large (max 50 MB)")
 
-    # Next version number
-    latest = await db.execute(select(Presentation).order_by(Presentation.version.desc()))
+    # Optional script PDF — read + validate up front so we fail before conversion.
+    script_bytes: bytes | None = None
+    script_orig_name: str | None = None
+    if script is not None and script.filename:
+        _validate_pdf(script)
+        script_bytes = await script.read()
+        if len(script_bytes) > _MAX_SCRIPT_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Script PDF too large (max 25 MB)",
+            )
+        script_orig_name = script.filename
+
+    # Next version number — versioned per slot.
+    latest = await db.execute(
+        select(Presentation).where(Presentation.slot == slot).order_by(Presentation.version.desc())
+    )
     latest_p = latest.scalars().first()
     next_version = (latest_p.version + 1) if latest_p else 1
 
@@ -81,8 +136,12 @@ async def upload_presentation(
         delete_presentation_files(presentation_id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PPTX has no slides")
 
-    # Deactivate previous active
-    active_q = await db.execute(select(Presentation).where(Presentation.is_active == True))
+    # Deactivate previous active deck IN THE SAME SLOT only.
+    active_q = await db.execute(
+        select(Presentation).where(
+            Presentation.is_active == True, Presentation.slot == slot  # noqa: E712
+        )
+    )
     for p in active_q.scalars().all():
         p.is_active = False
 
@@ -90,6 +149,7 @@ async def upload_presentation(
         id=presentation_id,
         version=next_version,
         title=title,
+        slot=slot,
         pptx_path=str(slides_dir / file.filename),
         slides_dir=str(slides_dir),
         slide_count=slide_count,
@@ -97,10 +157,93 @@ async def upload_presentation(
         uploaded_by=current_user.id,
         created_at=datetime.now(timezone.utc),
     )
+
+    # Attach the script PDF if one was supplied.
+    if script_bytes is not None:
+        stored_path, safe_name, text = store_script_pdf(
+            presentation_id, script_bytes, script_orig_name or "script.pdf"
+        )
+        new_p.script_pdf_path = stored_path
+        new_p.script_filename = safe_name
+        new_p.script_text = text or None
+
     db.add(new_p)
     await db.flush()
     await db.refresh(new_p)
-    return PresentationPublic.model_validate(new_p)
+    return PresentationPublic.from_model(new_p)
+
+
+@router.post("/{presentation_id}/script", response_model=PresentationPublic)
+async def attach_script(
+    presentation_id: str,
+    script: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Attach or replace the PDF script for an existing presentation."""
+    result = await db.execute(select(Presentation).where(Presentation.id == presentation_id))
+    p = result.scalar_one_or_none()
+    if p is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Presentation not found")
+
+    _validate_pdf(script)
+    script_bytes = await script.read()
+    if len(script_bytes) > _MAX_SCRIPT_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Script PDF too large (max 25 MB)",
+        )
+
+    stored_path, safe_name, text = store_script_pdf(
+        presentation_id, script_bytes, script.filename or "script.pdf"
+    )
+    p.script_pdf_path = stored_path
+    p.script_filename = safe_name
+    p.script_text = text or None
+    await db.flush()
+    await db.refresh(p)
+    return PresentationPublic.from_model(p)
+
+
+@router.delete("/{presentation_id}/script", response_model=PresentationPublic)
+async def remove_script(
+    presentation_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Detach the script from a presentation."""
+    result = await db.execute(select(Presentation).where(Presentation.id == presentation_id))
+    p = result.scalar_one_or_none()
+    if p is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Presentation not found")
+    delete_script_pdf(presentation_id)
+    p.script_pdf_path = None
+    p.script_filename = None
+    p.script_text = None
+    await db.flush()
+    await db.refresh(p)
+    return PresentationPublic.from_model(p)
+
+
+@router.get("/{presentation_id}/script")
+async def download_script(
+    presentation_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_advisor_or_admin),
+):
+    """Stream the attached script PDF (admin preview / advisor reference)."""
+    result = await db.execute(select(Presentation).where(Presentation.id == presentation_id))
+    p = result.scalar_one_or_none()
+    if p is None or not p.script_pdf_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No script attached")
+    data = get_script_pdf_bytes(presentation_id)
+    if data is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Script file missing on disk")
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{p.script_filename or "script.pdf"}"'},
+    )
 
 
 @router.post("/{presentation_id}/activate", response_model=PresentationPublic)
@@ -114,13 +257,18 @@ async def activate_presentation(
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Presentation not found")
 
-    active_q = await db.execute(select(Presentation).where(Presentation.is_active == True))
+    # Only one active deck per slot — deactivate others in the target's slot.
+    active_q = await db.execute(
+        select(Presentation).where(
+            Presentation.is_active == True, Presentation.slot == target.slot  # noqa: E712
+        )
+    )
     for p in active_q.scalars().all():
         p.is_active = False
     target.is_active = True
     await db.flush()
     await db.refresh(target)
-    return PresentationPublic.model_validate(target)
+    return PresentationPublic.from_model(target)
 
 
 @router.delete("/{presentation_id}", response_model=dict)

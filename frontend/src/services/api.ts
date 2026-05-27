@@ -113,6 +113,11 @@ export const sessionsApi = {
     const response = await api.get(`/sessions/${id}`);
     return response.data;
   },
+  /** Decks the advisor should present for this session (appointment-type aware). */
+  presentations: async (id: string): Promise<import('../types').Presentation[]> => {
+    const response = await api.get(`/sessions/${id}/presentations`);
+    return response.data;
+  },
   end: async (id: string): Promise<void> => {
     await api.post(`/sessions/${id}/end`);
   },
@@ -156,13 +161,13 @@ export const questionnaireApi = {
 
 // Presentations (admin-uploaded slide decks)
 export const presentationsApi = {
-  list: async (): Promise<Presentation[]> => {
-    const response = await api.get('/presentations');
+  list: async (slot?: string): Promise<Presentation[]> => {
+    const response = await api.get('/presentations', { params: slot ? { slot } : undefined });
     return response.data;
   },
-  getActive: async (): Promise<Presentation | null> => {
+  getActive: async (slot?: string): Promise<Presentation | null> => {
     try {
-      const response = await api.get('/presentations/active');
+      const response = await api.get('/presentations/active', { params: slot ? { slot } : undefined });
       return response.data;
     } catch (err: unknown) {
       // 404 means no active deck — return null instead of throwing
@@ -171,15 +176,31 @@ export const presentationsApi = {
       throw err;
     }
   },
-  upload: async (title: string, file: File): Promise<Presentation> => {
+  upload: async (title: string, file: File, script?: File | null, slot: string = 'first'): Promise<Presentation> => {
     const formData = new FormData();
     formData.append('title', title);
+    formData.append('slot', slot);
     formData.append('file', file);
-    // IMPORTANT: do not set Content-Type manually. The browser sets
-    // "multipart/form-data; boundary=…" with the correct boundary automatically
-    // when passed a FormData body. An explicit "multipart/form-data" *without*
-    // the boundary makes the server fail to parse the form.
+    if (script) formData.append('script', script);
+    // Content-Type is handled by the axios request interceptor, which strips
+    // the default JSON header for FormData so the browser sets the multipart
+    // boundary automatically.
     const response = await api.post('/presentations', formData);
+    return response.data;
+  },
+  attachScript: async (id: string, script: File): Promise<Presentation> => {
+    const formData = new FormData();
+    formData.append('script', script);
+    const response = await api.post(`/presentations/${id}/script`, formData);
+    return response.data;
+  },
+  removeScript: async (id: string): Promise<Presentation> => {
+    const response = await api.delete(`/presentations/${id}/script`);
+    return response.data;
+  },
+  /** Fetch the attached script PDF as a blob (uses axios header auth). */
+  fetchScriptBlob: async (id: string): Promise<Blob> => {
+    const response = await api.get(`/presentations/${id}/script`, { responseType: 'blob' });
     return response.data;
   },
   activate: async (id: string): Promise<Presentation> => {

@@ -44,6 +44,15 @@ class TrainingSession(Base):
     slide_events: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     recording_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     analysis: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Which presentation deck was active when this session started. Lets the
+    # analyzer grade against the script attached to THAT deck rather than
+    # whatever happens to be active at analysis time.
+    presentation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("presentations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
@@ -54,6 +63,9 @@ class TrainingSession(Base):
     source: Mapped[str] = mapped_column(
         String(32), nullable=False, default="self_initiated", index=True
     )
+    # Appointment type ("first" | "second" | "third"), inherited from the
+    # assignment's profile. Drives which deck(s) + script(s) are used.
+    appointment_type: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     assignment_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("session_assignments.id", ondelete="SET NULL"),
@@ -75,6 +87,9 @@ class SessionProfile(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     persona: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Appointment type this profile represents: "first" | "second" | "third".
+    # Drives which deck(s) + script(s) the resulting session uses.
+    appointment_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_by: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -148,6 +163,15 @@ class Presentation(Base):
     pptx_path: Mapped[str] = mapped_column(String(512), nullable=False)
     slides_dir: Mapped[str] = mapped_column(String(512), nullable=False)  # dir containing slide-N.png
     slide_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Which appointment-type deck slot this belongs to:
+    #   "first" | "second" | "third_annuity" | "third_private_equity"
+    # One version is active per slot.
+    slot: Mapped[str] = mapped_column(String(32), nullable=False, default="first", index=True)
+    # Optional PDF script attached to this deck. The advisor is graded on how
+    # well they follow `script_text` (extracted from the PDF) for THIS deck.
+    script_pdf_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    script_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    script_text: Mapped[str | None] = mapped_column(String, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     uploaded_by: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

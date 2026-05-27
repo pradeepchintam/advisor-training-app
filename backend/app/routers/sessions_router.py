@@ -33,11 +33,73 @@ async def _fetch_client_image(gender: str) -> str:
     return f"https://ui-avatars.com/api/?name=Client&background=random&size=200"
 
 
-async def _load_active_script_content(db: AsyncSession) -> str | None:
+async def _active_decks_for_session(db: AsyncSession, session: "TrainingSession") -> list:
+    """Active presentation deck(s) for the session's appointment type.
+
+    first  → [first deck]
+    second → [second deck]
+    third  → [annuity deck, private-equity deck]
+    none   → [first deck]  (fallback)
+    """
+    from app.models import Presentation
+    from app.services.deck_slots import slots_for_appointment
+
+    slots = slots_for_appointment(getattr(session, "appointment_type", None))
+    decks = []
+    for slot in slots:
+        r = await db.execute(
+            select(Presentation).where(
+                Presentation.is_active == True, Presentation.slot == slot  # noqa: E712
+            )
+        )
+        p = r.scalar_one_or_none()
+        if p is not None:
+            decks.append(p)
+    return decks
+
+
+async def _load_script_for_session(db: AsyncSession, session: "TrainingSession") -> str | None:
+    """Resolve the script(s) the advisor was expected to follow for THIS session.
+
+    Priority:
+      1. The PDF script(s) attached to the deck(s) for the session's appointment
+         type. For a third appointment, the Annuity and Private-Equity scripts
+         are concatenated with labelled headers.
+      2. The legacy global active TrainingScript (backward-compat fallback).
+    """
     from app.models import TrainingScript
+    from app.services.deck_slots import SLOT_LABELS
+
+    decks = await _active_decks_for_session(db, session)
+    sections: list[str] = []
+    for d in decks:
+        if d.script_text:
+            label = SLOT_LABELS.get(d.slot, d.title)
+            sections.append(f"=== {label} script ===\n{d.script_text}")
+    if sections:
+        return "\n\n".join(sections)
+
+    # Fallback: legacy standalone active script
     r = await db.execute(select(TrainingScript).where(TrainingScript.is_active == True))
     s = r.scalar_one_or_none()
     return s.content if s else None
+
+
+async def _primary_presentation_id_for(db: AsyncSession, appointment_type: str | None) -> str | None:
+    """The active deck id for the FIRST slot of the appointment type (or fallback)."""
+    from app.models import Presentation
+    from app.services.deck_slots import slots_for_appointment
+
+    for slot in slots_for_appointment(appointment_type):
+        r = await db.execute(
+            select(Presentation).where(
+                Presentation.is_active == True, Presentation.slot == slot  # noqa: E712
+            )
+        )
+        p = r.scalar_one_or_none()
+        if p is not None:
+            return p.id
+    return None
 
 
 async def _run_analysis(session_id: str) -> None:
@@ -116,7 +178,7 @@ async def _run_analysis(session_id: str) -> None:
         # 3) Run Claude analysis with all signals folded in.
         # ------------------------------------------------------------------
         try:
-            script_content = await _load_active_script_content(db)
+            script_content = await _load_script_for_session(db, session)
             analysis = await analyze_session(
                 session,
                 script_content=script_content,
@@ -260,6 +322,7 @@ async def create_session(
         profile_name = profile.name
         source = "assigned"
         assignment_id = assignment.id
+        appointment_type = profile.appointment_type
 
         # Persona may be partial (created from picker without name/backstory)
         if not persona.name or not persona.backstory:
@@ -277,11 +340,16 @@ async def create_session(
                 detail="persona is required when no assignment_id is provided",
             )
         persona = payload.persona
+        appointment_type = None  # untyped → falls back to first-appointment deck
         if not persona.name or not persona.backstory:
             persona = generate_persona_details(persona.model_dump())
 
     # Fetch client image
     image_url = await _fetch_client_image(persona.gender)
+
+    # Snapshot the primary deck for this appointment type (first resolved slot)
+    # so recording/analysis linkage stays stable even if the admin swaps decks.
+    presentation_id = await _primary_presentation_id_for(db, appointment_type)
 
     session = TrainingSession(
         id=str(uuid.uuid4()),
@@ -294,6 +362,8 @@ async def create_session(
         started_at=datetime.now(timezone.utc),
         source=source,
         assignment_id=assignment_id,
+        presentation_id=presentation_id,
+        appointment_type=appointment_type,
     )
     db.add(session)
     await db.flush()
@@ -312,6 +382,29 @@ async def create_session(
         assignment_id=session.assignment_id,
         profile_name=profile_name,
     )
+
+
+@router.get("/{session_id}/presentations", response_model=list)
+async def get_session_presentations(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_advisor_or_admin),
+):
+    """Decks the advisor should present for this session, based on its
+    appointment type. Third appointments return both Annuity + Private Equity."""
+    from app.schemas import PresentationPublic
+
+    result = await db.execute(
+        select(TrainingSession).where(TrainingSession.id == session_id)
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if current_user.role != "admin" and session.advisor_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    decks = await _active_decks_for_session(db, session)
+    return [PresentationPublic.from_model(d).model_dump() for d in decks]
 
 
 @router.get("/{session_id}", response_model=SessionDetail)
@@ -552,7 +645,7 @@ async def get_analysis(
     from app.services.claude_service import analyze_session
 
     try:
-        script_content = await _load_active_script_content(db)
+        script_content = await _load_script_for_session(db, session)
         analysis = await analyze_session(session, script_content=script_content)
         session.analysis = analysis
         await db.commit()

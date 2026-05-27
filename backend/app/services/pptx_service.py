@@ -115,3 +115,61 @@ def delete_presentation_files(presentation_id: str) -> None:
     d = presentation_dir(presentation_id)
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# PDF script attachment
+# ---------------------------------------------------------------------------
+
+def script_pdf_path(presentation_id: str) -> Path:
+    return presentation_dir(presentation_id) / "script.pdf"
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extract plain text from a PDF using pypdf. Returns "" on failure."""
+    import io
+
+    try:
+        from pypdf import PdfReader
+    except Exception:  # pragma: no cover — dependency missing
+        return ""
+
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        parts: list[str] = []
+        for page in reader.pages:
+            txt = page.extract_text() or ""
+            if txt.strip():
+                parts.append(txt.strip())
+        return "\n\n".join(parts).strip()
+    except Exception:
+        return ""
+
+
+def store_script_pdf(
+    presentation_id: str, pdf_bytes: bytes, original_filename: str
+) -> tuple[str, str, str]:
+    """Persist the script PDF next to the deck and extract its text.
+
+    Returns (stored_path, original_filename, extracted_text).
+    """
+    pres_dir = presentation_dir(presentation_id)
+    pres_dir.mkdir(parents=True, exist_ok=True)
+    dst = script_pdf_path(presentation_id)
+    dst.write_bytes(pdf_bytes)
+    text = _extract_pdf_text(pdf_bytes)
+    safe_name = Path(original_filename).name or "script.pdf"
+    return str(dst), safe_name, text
+
+
+def get_script_pdf_bytes(presentation_id: str) -> bytes | None:
+    p = script_pdf_path(presentation_id)
+    if not p.exists():
+        return None
+    return p.read_bytes()
+
+
+def delete_script_pdf(presentation_id: str) -> None:
+    p = script_pdf_path(presentation_id)
+    if p.exists():
+        p.unlink(missing_ok=True)

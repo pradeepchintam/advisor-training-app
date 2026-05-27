@@ -226,8 +226,33 @@ class PresentationPublic(BaseModel):
     is_active: bool
     uploaded_by: Optional[str] = None
     created_at: datetime
+    # Attached PDF script (optional). has_script lets the UI show a badge
+    # without exposing the full extracted text.
+    has_script: bool = False
+    script_filename: Optional[str] = None
+    # Appointment-type deck slot + its human label.
+    slot: str = "first"
+    slot_label: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+    @classmethod
+    def from_model(cls, p) -> "PresentationPublic":
+        from app.services.deck_slots import SLOT_LABELS
+        slot = getattr(p, "slot", None) or "first"
+        return cls(
+            id=p.id,
+            version=p.version,
+            title=p.title,
+            slide_count=p.slide_count,
+            is_active=p.is_active,
+            uploaded_by=p.uploaded_by,
+            created_at=p.created_at,
+            has_script=bool(getattr(p, "script_pdf_path", None)),
+            script_filename=getattr(p, "script_filename", None),
+            slot=slot,
+            slot_label=SLOT_LABELS.get(slot, slot),
+        )
 
 
 # ---------------------------------------------------------------------------

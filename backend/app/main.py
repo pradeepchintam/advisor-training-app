@@ -137,11 +137,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
         conversation: list[dict] = list(session.conversation or [])
         slide_events: list[dict] = list(session.slide_events or [])
 
-        # Pull active presentation (advisor session uses this — may be missing)
-        pres_result = await db.execute(
-            select(Presentation).where(Presentation.is_active == True)
-        )
-        active_presentation = pres_result.scalar_one_or_none()
+        # Prefer the deck recorded on the session (so the slides match what the
+        # analyzer will grade against). Fall back to whatever is active now.
+        active_presentation = None
+        if getattr(session, "presentation_id", None):
+            pres_result = await db.execute(
+                select(Presentation).where(Presentation.id == session.presentation_id)
+            )
+            active_presentation = pres_result.scalar_one_or_none()
+        if active_presentation is None:
+            pres_result = await db.execute(
+                select(Presentation).where(Presentation.is_active == True)
+            )
+            active_presentation = pres_result.scalar_one_or_none()
 
         # Send welcome message
         await websocket.send_json({
@@ -184,10 +192,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                     if not isinstance(slide_num, int) or slide_num < 1:
                         await websocket.send_json({"type": "error", "message": "Invalid slide_number"})
                         continue
-                    slide_events.append({
+                    event = {
                         "slide_number": slide_num,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
-                    })
+                    }
+                    # Optional: which deck this slide belongs to (third appts have 2 decks)
+                    pres_id = data.get("presentation_id")
+                    if isinstance(pres_id, str) and pres_id:
+                        event["presentation_id"] = pres_id
+                    deck_label = data.get("deck_label")
+                    if isinstance(deck_label, str) and deck_label:
+                        event["deck_label"] = deck_label
+                    slide_events.append(event)
                     session.slide_events = list(slide_events)
                     await db.commit()
                     # Echo for client confirmation

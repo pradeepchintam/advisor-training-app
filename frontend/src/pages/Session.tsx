@@ -51,11 +51,16 @@ export default function Session() {
   const [isEnding, setIsEnding] = useState(false);
   const [interimText, setInterimText] = useState('');
 
-  // Slide deck state
-  const [presentation, setPresentation] = useState<Presentation | null>(null);
-  const [currentSlide, setCurrentSlide] = useState(1);
+  // Slide deck state. A session may have one deck (1st/2nd appt) or two
+  // (3rd appt: Annuity + Private Equity) shown as tabs.
+  const [decks, setDecks] = useState<Presentation[]>([]);
+  const [activeDeckIndex, setActiveDeckIndex] = useState(0);
+  const [slidePerDeck, setSlidePerDeck] = useState<Record<string, number>>({});
   const [slideBlobUrl, setSlideBlobUrl] = useState<string | null>(null);
   const [slideLoading, setSlideLoading] = useState(false);
+
+  const presentation = decks[activeDeckIndex] ?? null;
+  const currentSlide = presentation ? (slidePerDeck[presentation.id] ?? 1) : 1;
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -130,15 +135,18 @@ export default function Session() {
     };
   }, [stopAudio]);
 
-  // Fetch the active presentation once per session.
+  // Fetch the deck(s) for THIS session based on its appointment type.
+  // Third appointments return two decks (Annuity + Private Equity).
   useEffect(() => {
-    presentationsApi.getActive()
-      .then((p) => {
-        setPresentation(p);
-        setCurrentSlide(1);
+    if (!id) return;
+    sessionsApi.presentations(id)
+      .then((list) => {
+        setDecks(list);
+        setActiveDeckIndex(0);
+        setSlidePerDeck(Object.fromEntries(list.map((d) => [d.id, 1])));
       })
-      .catch(() => setPresentation(null));
-  }, []);
+      .catch(() => setDecks([]));
+  }, [id]);
 
   // Whenever the slide number changes (or the deck loads), fetch that slide's PNG.
   useEffect(() => {
@@ -172,9 +180,14 @@ export default function Session() {
     if (!presentation) return;
     const clamped = Math.max(1, Math.min(presentation.slide_count, n));
     if (clamped === currentSlide) return;
-    setCurrentSlide(clamped);
+    setSlidePerDeck((prev) => ({ ...prev, [presentation.id]: clamped }));
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'advisor_slide_change', slide_number: clamped }));
+      wsRef.current.send(JSON.stringify({
+        type: 'advisor_slide_change',
+        slide_number: clamped,
+        presentation_id: presentation.id,
+        deck_label: presentation.slot_label ?? presentation.title,
+      }));
     }
   }, [presentation, currentSlide]);
 
@@ -554,9 +567,32 @@ export default function Session() {
         <div className="flex-1 bg-navy-950 border-r border-navy-700 flex flex-col min-w-0">
           {presentation ? (
             <>
+              {/* Deck tabs — shown when the session has more than one deck
+                  (3rd appointment: Annuity + Private Equity). */}
+              {decks.length > 1 && (
+                <div className="flex gap-1 px-5 pt-3 bg-navy-900">
+                  {decks.map((d, i) => (
+                    <button
+                      key={d.id}
+                      onClick={() => setActiveDeckIndex(i)}
+                      className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-colors ${
+                        i === activeDeckIndex
+                          ? 'bg-navy-950 text-gold-400 border-x border-t border-navy-700'
+                          : 'bg-navy-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {d.slot_label ?? d.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {/* Slide header */}
               <div className="px-5 py-3 border-b border-navy-700 flex items-center justify-between bg-navy-900">
                 <div className="flex items-center gap-3">
+                  {decks.length > 1 && presentation.slot_label && (
+                    <span className="text-gold-400 text-xs font-semibold uppercase tracking-wider">{presentation.slot_label}</span>
+                  )}
                   <span className="text-slate-300 text-sm font-semibold truncate max-w-md">{presentation.title}</span>
                   <span className="text-slate-500 text-xs">v{presentation.version}</span>
                 </div>

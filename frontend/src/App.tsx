@@ -16,7 +16,6 @@ import AdvisorManagement from './pages/admin/AdvisorManagement';
 import QuestionnaireEditor from './pages/admin/QuestionnaireEditor';
 import AdminSessionReview from './pages/admin/AdminSessionReview';
 import PresentationManagement from './pages/admin/PresentationManagement';
-import ScriptEditor from './pages/admin/ScriptEditor';
 import SessionProfiles from './pages/admin/SessionProfiles';
 import AssignmentManager from './pages/admin/AssignmentManager';
 import StartAssignment from './pages/StartAssignment';
@@ -198,15 +197,6 @@ export default function App() {
         element={
           <ProtectedRoute adminOnly>
             <Layout><PresentationManagement /></Layout>
-          </ProtectedRoute>
-        }
-      />
-
-      <Route
-        path="/admin/script"
-        element={
-          <ProtectedRoute adminOnly>
-            <Layout><ScriptEditor /></Layout>
           </ProtectedRoute>
         }
       />

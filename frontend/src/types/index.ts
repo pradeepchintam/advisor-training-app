@@ -192,6 +192,8 @@ export interface QuestionnaireContent {
 // ---------------------------------------------------------------------------
 // Presentations (admin-uploaded slide decks)
 // ---------------------------------------------------------------------------
+export type DeckSlot = 'first' | 'second' | 'third_annuity' | 'third_private_equity';
+
 export interface Presentation {
   id: string;
   version: number;
@@ -200,6 +202,10 @@ export interface Presentation {
   is_active: boolean;
   uploaded_by?: string | null;
   created_at: string;
+  has_script?: boolean;
+  script_filename?: string | null;
+  slot?: DeckSlot;
+  slot_label?: string | null;
 }
 
 // ---------------------------------------------------------------------------

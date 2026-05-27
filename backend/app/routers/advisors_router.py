@@ -67,7 +67,7 @@ async def list_advisors(
 async def create_advisor(
     payload: UserCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    current_user: User = Depends(require_admin),
 ):
     # Check duplicate email
     result = await db.execute(select(User).where(User.email == payload.email))
@@ -89,7 +89,51 @@ async def create_advisor(
     db.add(user)
     await db.flush()
     await db.refresh(user)
+
+    # Auto-assign the onboarding curriculum to newly created advisors (not admins).
+    # Wrapped so a curriculum failure never blocks advisor creation.
+    if user.role == "advisor":
+        try:
+            from app.services.curriculum_service import assign_curriculum_to_advisor
+            await assign_curriculum_to_advisor(db, user.id, assigned_by=current_user.id)
+        except Exception as e:  # noqa: BLE001
+            import logging
+            logging.getLogger("trajan.curriculum").warning(
+                "Failed to auto-assign curriculum to advisor %s: %s", user.id, e
+            )
+
     return UserPublic.model_validate(user)
+
+
+@router.post("/curriculum/backfill", response_model=dict)
+async def backfill_curriculum(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Ensure the curriculum profiles exist and assign the 60-assignment program
+    to every active advisor that doesn't already have it. Idempotent."""
+    from app.services.curriculum_service import (
+        assign_curriculum_to_advisor,
+        ensure_curriculum_profiles,
+    )
+
+    profiles_created = await ensure_curriculum_profiles(db, created_by=current_user.id)
+
+    advisors_q = await db.execute(
+        select(User).where(User.role == "advisor", User.is_active == True)  # noqa: E712
+    )
+    advisors = advisors_q.scalars().all()
+
+    results = []
+    for adv in advisors:
+        created = await assign_curriculum_to_advisor(db, adv.id, assigned_by=current_user.id)
+        results.append({"advisor_id": adv.id, "name": adv.name, "assignments_created": created})
+
+    return {
+        "profiles_created": profiles_created,
+        "advisors_processed": len(advisors),
+        "details": results,
+    }
 
 
 @router.get("/{advisor_id}", response_model=dict)
