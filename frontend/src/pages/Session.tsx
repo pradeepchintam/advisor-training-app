@@ -182,6 +182,7 @@ export default function Session() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [isVideoRecording, setIsVideoRecording] = useState(false);
+  const [hasAudioTrack, setHasAudioTrack] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
   const [interimText, setInterimText] = useState('');
@@ -242,7 +243,20 @@ export default function Session() {
   // Underlying error code (SpeechRecognition.error or getUserMedia DOMException
   // name) so the banner can show specifics + tailor recovery instructions.
   const [micErrorCode, setMicErrorCode] = useState<string | null>(null);
-  const [micDiag, setMicDiag] = useState<{ permission?: string; getUserMedia?: string } | null>(null);
+  const [micDiag, setMicDiag] = useState<{
+    permission?: string;
+    getUserMedia?: string;
+    audioInputs?: number;
+    audioInputLabels?: string[];
+    audioInputIds?: string[];
+  } | null>(null);
+  // When the OS default mic is a phantom (asleep Bluetooth, unplugged USB,
+  // etc.) Chrome reports NotFoundError. The user can pick a specific device
+  // from the diagnostic dropdown; we then pin that deviceId for all future
+  // getUserMedia calls in this session.
+  const [preferredDeviceId, setPreferredDeviceId] = useState<string | null>(null);
+  const preferredDeviceIdRef = useRef<string | null>(null);
+  const [selectedDeviceChoice, setSelectedDeviceChoice] = useState<string>('');
 
   // ---- Avatar mouth overlay driven by Polly visemes ----------------------
   const [mouthOpenness, setMouthOpenness] = useState(0);
@@ -536,51 +550,107 @@ export default function Session() {
     }
   }, [enqueueSentences]);
 
-  // MediaRecorder setup
+  // MediaRecorder setup — camera and microphone are acquired as INDEPENDENT
+  // getUserMedia calls so a failure in one doesn't kill the other. The
+  // session can run with any subset of available devices:
+  //
+  //   • both → video + audio recording, normal flow
+  //   • video only → silent video recording (camera works, mic is missing)
+  //   • audio only → audio recording (no webcam)
+  //   • neither → no recording, but the session UI + client TTS still work
+  //
+  // Audio failures still flip the micDenied flag so the recovery banner +
+  // device picker show up; SpeechRecognition will likely fail too.
   const startRecording = useCallback(async () => {
+    const pinnedId = preferredDeviceIdRef.current;
+    const audioConstraint = pinnedId
+      ? ({ deviceId: { exact: pinnedId } } as MediaTrackConstraints)
+      : (true as boolean);
+
+    const explain: Record<string, string> = {
+      NotAllowedError: 'permission denied',
+      NotFoundError: 'no device found',
+      NotReadableError: 'device in use by another app',
+      OverconstrainedError: 'no device matches constraints',
+      SecurityError: 'blocked by browser security policy',
+    };
+
+    let audioTrack: MediaStreamTrack | null = null;
+    let videoTrack: MediaStreamTrack | null = null;
+
+    // --- AUDIO -----------------------------------------------------------
     try {
-      let stream: MediaStream;
-      let mimeType = 'audio/webm';
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        setIsVideoRecording(true);
-        mimeType = MediaRecorder.isTypeSupported('video/webm') ? 'video/webm' : 'audio/webm';
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        setIsVideoRecording(false);
-        mimeType = 'audio/webm';
-      }
-
-      mediaStreamRef.current = stream;
-      const mr = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = mr;
-      chunksRef.current = [];
-
-      mr.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-
-      mr.start(10000); // collect chunks every 10s
-      setIsRecording(true);
+      const audioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
+      audioTrack = audioStream.getAudioTracks()[0] ?? null;
     } catch (err) {
       const e = err as { name?: string; message?: string };
-      const explain: Record<string, string> = {
-        NotAllowedError: 'Camera/microphone permission denied. Click the camera icon in your browser address bar to allow access.',
-        NotFoundError: 'No camera or microphone found on this device.',
-        NotReadableError: 'Camera/microphone is in use by another application.',
-        OverconstrainedError: 'No camera/microphone matches the required constraints.',
-        SecurityError: 'Recording blocked by browser security policy. Try HTTPS or localhost.',
-      };
-      const friendly = explain[e.name || ''] || e.message || 'Unknown error';
-      console.warn('Recording not available:', err);
-      toast.error(`Recording disabled — ${friendly}`);
-      // If the browser blocked the mic outright, stop the auto-listen loop.
-      // The banner gives the advisor a Retry button.
-      if (e.name === 'NotAllowedError' || e.name === 'SecurityError' || e.name === 'NotFoundError') {
+      const friendly = explain[e.name || ''] || e.message || 'unknown error';
+      console.warn('Audio unavailable:', err);
+      toast.warning(`Microphone unavailable — ${friendly}. Session will continue without it.`);
+      // Flip the denied flag so the banner + device picker appear, and the
+      // auto-listen loop doesn't spin retrying SpeechRecognition.
+      if (
+        e.name === 'NotAllowedError' ||
+        e.name === 'SecurityError' ||
+        e.name === 'NotFoundError' ||
+        e.name === 'NotReadableError' ||
+        e.name === 'OverconstrainedError'
+      ) {
         micDeniedRef.current = true;
         setMicDenied(true);
         setMicErrorCode(`getUserMedia/${e.name}`);
       }
+    }
+
+    // --- VIDEO (independent) --------------------------------------------
+    try {
+      const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      videoTrack = videoStream.getVideoTracks()[0] ?? null;
+    } catch (err) {
+      const e = err as { name?: string; message?: string };
+      const friendly = explain[e.name || ''] || e.message || 'unknown error';
+      console.warn('Camera unavailable:', err);
+      // Only toast on permission-style failures, not "no camera installed".
+      if (e.name === 'NotAllowedError' || e.name === 'NotReadableError' || e.name === 'SecurityError') {
+        toast.warning(`Camera unavailable — ${friendly}. Session will continue without it.`);
+      }
+    }
+
+    if (!audioTrack && !videoTrack) {
+      toast.error(
+        'No microphone or camera available. The session UI and client audio still work, ' +
+        'but the session won\'t be recorded. Plug in a device and click Retry mic.',
+      );
+      return;
+    }
+
+    // Build a single MediaStream from whichever tracks we got.
+    const combined = new MediaStream();
+    if (audioTrack) combined.addTrack(audioTrack);
+    if (videoTrack) combined.addTrack(videoTrack);
+    mediaStreamRef.current = combined;
+    setIsVideoRecording(!!videoTrack);
+    setHasAudioTrack(!!audioTrack);
+
+    // Pick a mimeType matching what we actually have. Without video tracks
+    // we want audio/webm so the browser doesn't try to encode an empty video.
+    const mimeType = videoTrack
+      ? (MediaRecorder.isTypeSupported('video/webm') ? 'video/webm' : 'audio/webm')
+      : 'audio/webm';
+
+    try {
+      const mr = new MediaRecorder(combined, { mimeType });
+      mediaRecorderRef.current = mr;
+      chunksRef.current = [];
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      mr.start(10000); // collect chunks every 10s
+      setIsRecording(true);
+    } catch (err) {
+      const e = err as Error;
+      console.error('MediaRecorder failed:', e);
+      toast.error(`Recording setup failed: ${e.message}`);
     }
   }, [toast]);
 
@@ -814,17 +884,80 @@ export default function Session() {
     setSessionStatus('ready');
   }, [isRecording, startRecording]);
 
-  // Probe the actual browser permission state + an isolated getUserMedia call.
-  // Lets the advisor see whether the block is at the browser level, the OS
-  // level, or somewhere else — three very different fixes.
+  // Pin a specific audio input device (chosen from the diagnostic dropdown)
+  // and restart the recording pipeline against it. Useful when the OS default
+  // is broken (asleep Bluetooth, etc.) but other inputs are available.
+  const useDevice = useCallback(async (deviceId: string, label?: string) => {
+    if (!deviceId) {
+      toast.error('Pick a device from the dropdown first');
+      return;
+    }
+    try {
+      // Verify the device actually works before we pin it. Open + close.
+      const probe = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: deviceId } },
+      });
+      probe.getTracks().forEach((t) => t.stop());
+    } catch (e) {
+      const err = e as { name?: string; message?: string };
+      toast.error(`That device didn't work: ${err.name ?? 'Error'} — ${err.message ?? ''}`);
+      return;
+    }
+
+    preferredDeviceIdRef.current = deviceId;
+    setPreferredDeviceId(deviceId);
+
+    // Tear down any existing recording stream so startRecording rebuilds it
+    // with the new constraints.
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+    try {
+      mediaRecorderRef.current?.stop();
+    } catch {
+      /* already stopped */
+    }
+    setIsRecording(false);
+
+    // Clear the denied state and re-run the full pipeline.
+    micDeniedRef.current = false;
+    setMicDenied(false);
+    setMicErrorCode(null);
+    await startRecording();
+    setSessionStatus('ready');
+    toast.success(`Using ${label || 'selected microphone'}`);
+  }, [startRecording, toast]);
+
+  // Probe the actual browser permission state + an isolated getUserMedia call
+  // + enumerateDevices. The combination disambiguates between three very
+  // different problems: site permission, OS-level permission, and "no audio
+  // input device exists at all" (NotFoundError).
   const runMicDiagnostic = useCallback(async () => {
-    const result: { permission?: string; getUserMedia?: string } = {};
+    const result: {
+      permission?: string;
+      getUserMedia?: string;
+      audioInputs?: number;
+      audioInputLabels?: string[];
+      audioInputIds?: string[];
+    } = {};
     try {
       const perm = await (navigator as { permissions?: { query: (q: { name: string }) => Promise<PermissionStatus> } })
         .permissions?.query({ name: 'microphone' });
       result.permission = perm ? perm.state : '(API unavailable)';
     } catch (e) {
       result.permission = `query failed: ${(e as Error).message}`;
+    }
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter((d) => d.kind === 'audioinput');
+      result.audioInputs = inputs.length;
+      result.audioInputLabels = inputs.map(
+        (d) => d.label || '(label hidden — grant mic first)',
+      );
+      result.audioInputIds = inputs.map((d) => d.deviceId);
+    } catch (e) {
+      result.audioInputLabels = [`enumerate failed: ${(e as Error).message}`];
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1025,12 +1158,16 @@ export default function Session() {
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Recording indicator */}
+          {/* Recording indicator — shows exactly what's being captured. */}
           {isRecording && (
             <div className="flex items-center gap-1.5 bg-red-900/40 border border-red-800 px-3 py-1 rounded-full">
               <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
               <span className="text-red-400 text-xs font-semibold">
-                {isVideoRecording ? 'VIDEO REC' : 'AUDIO REC'}
+                {isVideoRecording && hasAudioTrack
+                  ? 'REC · video+audio'
+                  : isVideoRecording
+                  ? 'REC · video only'
+                  : 'REC · audio'}
               </span>
             </div>
           )}
@@ -1235,62 +1372,172 @@ export default function Session() {
                 browser has blocked mic access. Includes a diagnostic probe so
                 the advisor can tell whether the block is at the browser level,
                 the OS level, or a stale page state. */}
-            {micDenied && (
-              <div className="mb-4 rounded-lg border border-red-700/60 bg-red-900/30 p-3 text-sm">
-                <div className="flex items-start gap-3">
-                  <span className="text-xl leading-none mt-0.5">🎤</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-red-200 font-semibold mb-1">Microphone access is blocked</div>
-                    {micErrorCode && (
-                      <div className="text-red-100/60 text-[11px] font-mono mb-2">code: {micErrorCode}</div>
-                    )}
-                    <div className="text-red-100/85 text-xs leading-relaxed space-y-1.5">
-                      <p>
-                        If Chrome's <span className="font-medium text-red-100">Site settings</span> already say
-                        Allow, the most likely fixes are (in order):
-                      </p>
-                      <ol className="list-decimal list-inside space-y-0.5 ml-1">
-                        <li>
-                          <span className="font-medium text-red-100">Hard-refresh this page</span> (Cmd+Shift+R on Mac,
-                          Ctrl+Shift+R on Windows). Chrome caches the old permission state until reload.
-                        </li>
-                        <li>
-                          <span className="font-medium text-red-100">Check OS-level mic permission for Chrome.</span>{' '}
-                          macOS: <em>System Settings → Privacy &amp; Security → Microphone</em> — Chrome must be enabled.
-                          Windows: <em>Settings → Privacy → Microphone → Allow desktop apps</em>.
-                        </li>
-                        <li>
-                          Make sure no other app (Zoom, Teams, FaceTime) has an exclusive lock on the mic.
-                        </li>
-                        <li>
-                          As a last resort, try a different browser or an incognito window.
-                        </li>
-                      </ol>
-                    </div>
-                    {micDiag && (
-                      <div className="mt-3 bg-navy-900/60 border border-red-700/30 rounded px-2 py-1.5 text-[11px] font-mono leading-snug text-red-100/90">
-                        <div>permissions.query → {micDiag.permission ?? '—'}</div>
-                        <div>getUserMedia(audio) → {micDiag.getUserMedia ?? '—'}</div>
+            {micDenied && (() => {
+              const isNotFound = micErrorCode?.includes('NotFoundError');
+              const isInUse = micErrorCode?.includes('NotReadableError');
+              return (
+                <div className="mb-4 rounded-lg border border-red-700/60 bg-red-900/30 p-3 text-sm">
+                  <div className="flex items-start gap-3">
+                    <span className="text-xl leading-none mt-0.5">🎤</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-red-200 font-semibold mb-1">
+                        {isNotFound
+                          ? 'No microphone detected'
+                          : isInUse
+                          ? 'Microphone is in use by another app'
+                          : 'Microphone access is blocked'}
                       </div>
-                    )}
-                  </div>
-                  <div className="flex flex-col gap-1.5 flex-shrink-0">
-                    <button
-                      onClick={retryMic}
-                      className="bg-red-700 hover:bg-red-600 text-white font-semibold px-3 py-1.5 rounded text-xs whitespace-nowrap"
-                    >
-                      Retry mic
-                    </button>
-                    <button
-                      onClick={runMicDiagnostic}
-                      className="bg-navy-700 hover:bg-navy-600 text-slate-200 font-semibold px-3 py-1.5 rounded text-xs whitespace-nowrap border border-navy-600"
-                    >
-                      Run diagnostic
-                    </button>
+                      {micErrorCode && (
+                        <div className="text-red-100/60 text-[11px] font-mono mb-2">code: {micErrorCode}</div>
+                      )}
+                      <div className="text-red-100/85 text-xs leading-relaxed space-y-1.5">
+                        {isNotFound ? (
+                          <>
+                            <p>
+                              Chrome can't see any audio input device on this machine. This is a
+                              hardware / OS-state issue, not a permission issue.
+                            </p>
+                            <ol className="list-decimal list-inside space-y-0.5 ml-1">
+                              <li>
+                                Make sure a microphone is connected — built-in, USB headset, Bluetooth
+                                headset (and that the Bluetooth device isn't asleep).
+                              </li>
+                              <li>
+                                <span className="font-medium text-red-100">macOS:</span>{' '}
+                                <em>System Settings → Sound → Input</em> — at least one input device
+                                must be listed and selected. Also{' '}
+                                <em>System Settings → Privacy &amp; Security → Microphone</em> — Chrome
+                                must be enabled (when OS hides the device entirely, Chrome reports
+                                NotFoundError, not Denied).
+                              </li>
+                              <li>
+                                <span className="font-medium text-red-100">Windows:</span>{' '}
+                                <em>Settings → System → Sound → Input</em> — a device must be active
+                                and not muted.
+                              </li>
+                              <li>
+                                Click <span className="font-medium text-red-100">Run diagnostic</span>{' '}
+                                below to see exactly which audio devices Chrome can see, then plug in
+                                / enable one and click Retry.
+                              </li>
+                            </ol>
+                          </>
+                        ) : isInUse ? (
+                          <>
+                            <p>
+                              Another application has an exclusive lock on the microphone.
+                              Common culprits: Zoom, Teams, FaceTime, Discord, OBS.
+                            </p>
+                            <ol className="list-decimal list-inside space-y-0.5 ml-1">
+                              <li>Quit (don't just minimize) any other app that uses the mic.</li>
+                              <li>Then click Retry.</li>
+                            </ol>
+                          </>
+                        ) : (
+                          <>
+                            <p>
+                              If Chrome's <span className="font-medium text-red-100">Site settings</span>{' '}
+                              already say Allow, the most likely fixes are (in order):
+                            </p>
+                            <ol className="list-decimal list-inside space-y-0.5 ml-1">
+                              <li>
+                                <span className="font-medium text-red-100">Hard-refresh this page</span>{' '}
+                                (Cmd+Shift+R on Mac, Ctrl+Shift+R on Windows). Chrome caches the old
+                                permission state until reload.
+                              </li>
+                              <li>
+                                <span className="font-medium text-red-100">
+                                  Check OS-level mic permission for Chrome.
+                                </span>{' '}
+                                macOS: <em>System Settings → Privacy &amp; Security → Microphone</em>{' '}
+                                — Chrome must be enabled. Windows:{' '}
+                                <em>Settings → Privacy → Microphone → Allow desktop apps</em>.
+                              </li>
+                              <li>
+                                Make sure no other app (Zoom, Teams, FaceTime) has an exclusive lock on
+                                the mic.
+                              </li>
+                              <li>As a last resort, try a different browser or an incognito window.</li>
+                            </ol>
+                          </>
+                        )}
+                      </div>
+                      {micDiag && (
+                        <div className="mt-3 bg-navy-900/60 border border-red-700/30 rounded px-2 py-1.5 text-[11px] font-mono leading-snug text-red-100/90">
+                          <div>permissions.query → {micDiag.permission ?? '—'}</div>
+                          <div>getUserMedia(audio) → {micDiag.getUserMedia ?? '—'}</div>
+                          <div>
+                            audio inputs visible to Chrome: {micDiag.audioInputs ?? '—'}
+                          </div>
+                          {micDiag.audioInputLabels && micDiag.audioInputLabels.length > 0 && (
+                            <div className="mt-1 pl-3">
+                              {micDiag.audioInputLabels.map((label, i) => (
+                                <div key={i}>• {label}</div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {/* Device picker — appears only when Chrome can see at
+                          least one audio input. Lets the advisor pick a
+                          specific device (bypasses a broken OS default). */}
+                      {micDiag && micDiag.audioInputIds && micDiag.audioInputIds.length > 0 && (
+                        <div className="mt-3 bg-navy-900/60 border border-gold-500/30 rounded p-2.5">
+                          <div className="text-xs text-gold-300 font-semibold mb-1.5">
+                            Try a specific microphone
+                          </div>
+                          <div className="flex gap-2 items-stretch">
+                            <select
+                              value={selectedDeviceChoice}
+                              onChange={(e) => setSelectedDeviceChoice(e.target.value)}
+                              className="flex-1 bg-navy-900 border border-navy-600 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-gold-500 min-w-0"
+                            >
+                              <option value="">— pick an input device —</option>
+                              {micDiag.audioInputIds.map((id, i) => (
+                                <option key={id || i} value={id}>
+                                  {micDiag.audioInputLabels?.[i] ?? `Device ${i + 1}`}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              onClick={() => {
+                                if (!selectedDeviceChoice) return;
+                                const idx = micDiag.audioInputIds!.indexOf(selectedDeviceChoice);
+                                const label = idx >= 0 ? micDiag.audioInputLabels?.[idx] : undefined;
+                                void useDevice(selectedDeviceChoice, label);
+                              }}
+                              disabled={!selectedDeviceChoice}
+                              className="bg-gold-500 hover:bg-gold-400 disabled:opacity-40 disabled:cursor-not-allowed text-navy-900 font-semibold px-3 py-1.5 rounded text-xs whitespace-nowrap"
+                            >
+                              Use this device
+                            </button>
+                          </div>
+                          {preferredDeviceId && (
+                            <div className="text-[10px] text-gold-300/70 mt-1.5">
+                              Pinned to deviceId {preferredDeviceId.slice(0, 12)}…
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-1.5 flex-shrink-0">
+                      <button
+                        onClick={retryMic}
+                        className="bg-red-700 hover:bg-red-600 text-white font-semibold px-3 py-1.5 rounded text-xs whitespace-nowrap"
+                      >
+                        Retry mic
+                      </button>
+                      <button
+                        onClick={runMicDiagnostic}
+                        className="bg-navy-700 hover:bg-navy-600 text-slate-200 font-semibold px-3 py-1.5 rounded text-xs whitespace-nowrap border border-navy-600"
+                      >
+                        Run diagnostic
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Status indicator */}
             <div className="flex items-center justify-center mb-4">
