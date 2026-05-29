@@ -38,15 +38,22 @@ def _libreoffice_to_pdf(pptx_path: Path, out_dir: Path) -> Path:
     user profile dir. We pass an isolated `-env:UserInstallation=...` so each
     invocation gets its own profile.
     """
-    profile = out_dir / "_lo_profile"
-    profile.mkdir(exist_ok=True)
+    # IMPORTANT: file:// URIs MUST be absolute. If RECORDINGS_DIR is set to a
+    # relative path (e.g. "./recordings"), str(profile) yields something like
+    # "recordings/presentations/<id>/_lo_profile" — libreoffice silently hangs
+    # trying to resolve that, producing a multi-minute "PPT upload timed out"
+    # symptom. Always resolve to an absolute path before building the URI.
+    profile = (out_dir / "_lo_profile").resolve()
+    profile.mkdir(parents=True, exist_ok=True)
+    abs_out_dir = out_dir.resolve()
+    abs_pptx_path = pptx_path.resolve()
     cmd = [
         "libreoffice",
         f"-env:UserInstallation=file://{profile}",
         "--headless",
         "--convert-to", "pdf",
-        "--outdir", str(out_dir),
-        str(pptx_path),
+        "--outdir", str(abs_out_dir),
+        str(abs_pptx_path),
     ]
     # 10-minute per-file ceiling. Big decks with embedded images/video can
     # take several minutes; 180s was tripping legitimate conversions on small

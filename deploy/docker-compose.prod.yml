@@ -10,6 +10,9 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      # Must be absolute — pptx_service builds file:// URIs against this, and
+      # relative paths cause libreoffice to silently hang during conversion.
+      RECORDINGS_DIR: /app/recordings
       S3_BUCKET: ${S3_BUCKET}
       # Used by transcription_service.py (AWS Transcribe staging) and
       # vision_service.py. Defaults blank so a missing SSM param degrades to
