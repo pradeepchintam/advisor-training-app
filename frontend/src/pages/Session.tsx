@@ -239,6 +239,10 @@ export default function Session() {
   // clears it via the Retry button after granting permission in the URL bar.
   const [micDenied, setMicDenied] = useState(false);
   const micDeniedRef = useRef(false);
+  // Underlying error code (SpeechRecognition.error or getUserMedia DOMException
+  // name) so the banner can show specifics + tailor recovery instructions.
+  const [micErrorCode, setMicErrorCode] = useState<string | null>(null);
+  const [micDiag, setMicDiag] = useState<{ permission?: string; getUserMedia?: string } | null>(null);
 
   // ---- Avatar mouth overlay driven by Polly visemes ----------------------
   const [mouthOpenness, setMouthOpenness] = useState(0);
@@ -572,9 +576,10 @@ export default function Session() {
       toast.error(`Recording disabled — ${friendly}`);
       // If the browser blocked the mic outright, stop the auto-listen loop.
       // The banner gives the advisor a Retry button.
-      if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
+      if (e.name === 'NotAllowedError' || e.name === 'SecurityError' || e.name === 'NotFoundError') {
         micDeniedRef.current = true;
         setMicDenied(true);
+        setMicErrorCode(`getUserMedia/${e.name}`);
       }
     }
   }, [toast]);
@@ -759,6 +764,7 @@ export default function Session() {
           }
           micDeniedRef.current = true;
           setMicDenied(true);
+          setMicErrorCode(`SpeechRecognition/${evt.error}`);
         } else {
           toast.error(`Microphone error (${evt.error}): ${detail}${evt.message ? ` — ${evt.message}` : ''}`);
         }
@@ -793,6 +799,8 @@ export default function Session() {
   const retryMic = useCallback(async () => {
     micDeniedRef.current = false;
     setMicDenied(false);
+    setMicErrorCode(null);
+    setMicDiag(null);
     // If recording never started (initial getUserMedia denial), retry that too.
     if (!isRecording) {
       try {
@@ -805,6 +813,29 @@ export default function Session() {
     // is up. Nudge sessionStatus in case we were stuck.
     setSessionStatus('ready');
   }, [isRecording, startRecording]);
+
+  // Probe the actual browser permission state + an isolated getUserMedia call.
+  // Lets the advisor see whether the block is at the browser level, the OS
+  // level, or somewhere else — three very different fixes.
+  const runMicDiagnostic = useCallback(async () => {
+    const result: { permission?: string; getUserMedia?: string } = {};
+    try {
+      const perm = await (navigator as { permissions?: { query: (q: { name: string }) => Promise<PermissionStatus> } })
+        .permissions?.query({ name: 'microphone' });
+      result.permission = perm ? perm.state : '(API unavailable)';
+    } catch (e) {
+      result.permission = `query failed: ${(e as Error).message}`;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      result.getUserMedia = 'OK';
+    } catch (e) {
+      const err = e as { name?: string; message?: string };
+      result.getUserMedia = `${err.name ?? 'Error'}: ${err.message ?? '(no message)'}`;
+    }
+    setMicDiag(result);
+  }, []);
 
   // Mute / unmute toggle — temporarily silences the mic (e.g., advisor needs
   // to take a phone call). The interactive default is mic-on for the whole
@@ -1201,26 +1232,62 @@ export default function Session() {
           {/* Voice interface */}
           <div className="border-t border-navy-700 bg-navy-800 p-5">
             {/* Mic-permission recovery banner. Shows persistently when the
-                browser has blocked mic access, with a direct Retry button. */}
+                browser has blocked mic access. Includes a diagnostic probe so
+                the advisor can tell whether the block is at the browser level,
+                the OS level, or a stale page state. */}
             {micDenied && (
               <div className="mb-4 rounded-lg border border-red-700/60 bg-red-900/30 p-3 text-sm">
                 <div className="flex items-start gap-3">
                   <span className="text-xl leading-none mt-0.5">🎤</span>
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <div className="text-red-200 font-semibold mb-1">Microphone access is blocked</div>
-                    <div className="text-red-100/80 text-xs leading-relaxed">
-                      Click the camera/lock icon in your browser's address bar →
-                      <span className="font-medium text-red-100"> Site settings</span> → set
-                      Microphone to <span className="font-medium text-red-100">Allow</span>.
-                      Then click Retry. Without mic access, this session can't proceed.
+                    {micErrorCode && (
+                      <div className="text-red-100/60 text-[11px] font-mono mb-2">code: {micErrorCode}</div>
+                    )}
+                    <div className="text-red-100/85 text-xs leading-relaxed space-y-1.5">
+                      <p>
+                        If Chrome's <span className="font-medium text-red-100">Site settings</span> already say
+                        Allow, the most likely fixes are (in order):
+                      </p>
+                      <ol className="list-decimal list-inside space-y-0.5 ml-1">
+                        <li>
+                          <span className="font-medium text-red-100">Hard-refresh this page</span> (Cmd+Shift+R on Mac,
+                          Ctrl+Shift+R on Windows). Chrome caches the old permission state until reload.
+                        </li>
+                        <li>
+                          <span className="font-medium text-red-100">Check OS-level mic permission for Chrome.</span>{' '}
+                          macOS: <em>System Settings → Privacy &amp; Security → Microphone</em> — Chrome must be enabled.
+                          Windows: <em>Settings → Privacy → Microphone → Allow desktop apps</em>.
+                        </li>
+                        <li>
+                          Make sure no other app (Zoom, Teams, FaceTime) has an exclusive lock on the mic.
+                        </li>
+                        <li>
+                          As a last resort, try a different browser or an incognito window.
+                        </li>
+                      </ol>
                     </div>
+                    {micDiag && (
+                      <div className="mt-3 bg-navy-900/60 border border-red-700/30 rounded px-2 py-1.5 text-[11px] font-mono leading-snug text-red-100/90">
+                        <div>permissions.query → {micDiag.permission ?? '—'}</div>
+                        <div>getUserMedia(audio) → {micDiag.getUserMedia ?? '—'}</div>
+                      </div>
+                    )}
                   </div>
-                  <button
-                    onClick={retryMic}
-                    className="bg-red-700 hover:bg-red-600 text-white font-semibold px-3 py-1.5 rounded text-xs whitespace-nowrap"
-                  >
-                    Retry mic
-                  </button>
+                  <div className="flex flex-col gap-1.5 flex-shrink-0">
+                    <button
+                      onClick={retryMic}
+                      className="bg-red-700 hover:bg-red-600 text-white font-semibold px-3 py-1.5 rounded text-xs whitespace-nowrap"
+                    >
+                      Retry mic
+                    </button>
+                    <button
+                      onClick={runMicDiagnostic}
+                      className="bg-navy-700 hover:bg-navy-600 text-slate-200 font-semibold px-3 py-1.5 rounded text-xs whitespace-nowrap border border-navy-600"
+                    >
+                      Run diagnostic
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
