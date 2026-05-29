@@ -234,6 +234,12 @@ export default function Session() {
   const mutedRef = useRef(false);
   const vadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Sticky "the browser blocked the mic" flag. When set, the auto-listen
+  // effect stops retrying so we don't spam the user with toasts. The advisor
+  // clears it via the Retry button after granting permission in the URL bar.
+  const [micDenied, setMicDenied] = useState(false);
+  const micDeniedRef = useRef(false);
+
   // ---- Avatar mouth overlay driven by Polly visemes ----------------------
   const [mouthOpenness, setMouthOpenness] = useState(0);
   const currentVisemesRef = useRef<import('../services/api').VisemeMark[]>([]);
@@ -564,6 +570,12 @@ export default function Session() {
       const friendly = explain[e.name || ''] || e.message || 'Unknown error';
       console.warn('Recording not available:', err);
       toast.error(`Recording disabled — ${friendly}`);
+      // If the browser blocked the mic outright, stop the auto-listen loop.
+      // The banner gives the advisor a Retry button.
+      if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
+        micDeniedRef.current = true;
+        setMicDenied(true);
+      }
     }
   }, [toast]);
 
@@ -734,7 +746,22 @@ export default function Session() {
           'language-not-supported': 'Speech recognition language not supported',
         };
         const detail = explain[evt.error] || evt.error;
-        toast.error(`Microphone error (${evt.error}): ${detail}${evt.message ? ` — ${evt.message}` : ''}`);
+        // Permission-related errors flip the sticky micDenied flag so the
+        // auto-listen effect stops re-firing in a loop. Toast only once;
+        // the in-page banner provides ongoing instructions + Retry.
+        const isPermission =
+          evt.error === 'not-allowed' ||
+          evt.error === 'audio-capture' ||
+          evt.error === 'service-not-allowed';
+        if (isPermission) {
+          if (!micDeniedRef.current) {
+            toast.error(`Microphone blocked: ${detail}`);
+          }
+          micDeniedRef.current = true;
+          setMicDenied(true);
+        } else {
+          toast.error(`Microphone error (${evt.error}): ${detail}${evt.message ? ` — ${evt.message}` : ''}`);
+        }
         isTalkingRef.current = false;
         setSessionStatus('ready');
         setInterimText('');
@@ -760,6 +787,24 @@ export default function Session() {
       // running from a previous re-arm — safe to ignore.
     }
   }, [toast]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Advisor clicked "Retry mic" after granting permission in browser settings.
+  // We clear the sticky denied flag and let the auto-listen effect fire.
+  const retryMic = useCallback(async () => {
+    micDeniedRef.current = false;
+    setMicDenied(false);
+    // If recording never started (initial getUserMedia denial), retry that too.
+    if (!isRecording) {
+      try {
+        await startRecording();
+      } catch {
+        /* startRecording handles its own toasting */
+      }
+    }
+    // Effect will fire startListening once status === 'ready' and recording
+    // is up. Nudge sessionStatus in case we were stuck.
+    setSessionStatus('ready');
+  }, [isRecording, startRecording]);
 
   // Mute / unmute toggle — temporarily silences the mic (e.g., advisor needs
   // to take a phone call). The interactive default is mic-on for the whole
@@ -788,15 +833,25 @@ export default function Session() {
 
   // Auto-open the mic whenever we're ready and not muted. This is what makes
   // every session "interactive by default" — no Start button needed.
+  //
+  // Important guards:
+  //   • !micDenied — stop retrying if the browser blocked the mic, otherwise
+  //     setSessionStatus('ready') in the error handler would loop forever.
+  //   • isRecording — ensure getUserMedia has actually granted the mic before
+  //     we ask SpeechRecognition for it (avoids racing the permission prompt).
   useEffect(() => {
     if (mutedRef.current) return;
+    if (micDeniedRef.current) return;
+    if (!isRecording) return;
     if (sessionStatus !== 'ready') return;
     if (recognitionRef.current && isTalkingRef.current) return;
     const t = setTimeout(() => {
-      if (!mutedRef.current && sessionStatus === 'ready') startListening();
+      if (!mutedRef.current && !micDeniedRef.current && sessionStatus === 'ready') {
+        startListening();
+      }
     }, 150);
     return () => clearTimeout(t);
-  }, [sessionStatus, startListening]);
+  }, [sessionStatus, startListening, isRecording, micDenied]);
 
   // Silence the client without opening the mic — pure "shush" control.
   // Clears the entire sentence-level TTS queue so no further audio plays
@@ -1145,6 +1200,31 @@ export default function Session() {
 
           {/* Voice interface */}
           <div className="border-t border-navy-700 bg-navy-800 p-5">
+            {/* Mic-permission recovery banner. Shows persistently when the
+                browser has blocked mic access, with a direct Retry button. */}
+            {micDenied && (
+              <div className="mb-4 rounded-lg border border-red-700/60 bg-red-900/30 p-3 text-sm">
+                <div className="flex items-start gap-3">
+                  <span className="text-xl leading-none mt-0.5">🎤</span>
+                  <div className="flex-1">
+                    <div className="text-red-200 font-semibold mb-1">Microphone access is blocked</div>
+                    <div className="text-red-100/80 text-xs leading-relaxed">
+                      Click the camera/lock icon in your browser's address bar →
+                      <span className="font-medium text-red-100"> Site settings</span> → set
+                      Microphone to <span className="font-medium text-red-100">Allow</span>.
+                      Then click Retry. Without mic access, this session can't proceed.
+                    </div>
+                  </div>
+                  <button
+                    onClick={retryMic}
+                    className="bg-red-700 hover:bg-red-600 text-white font-semibold px-3 py-1.5 rounded text-xs whitespace-nowrap"
+                  >
+                    Retry mic
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Status indicator */}
             <div className="flex items-center justify-center mb-4">
               <span className={`text-sm font-medium ${STATUS_COLOR[sessionStatus]}`}>
