@@ -83,23 +83,41 @@ async def list_presentations(
 async def upload_presentation(
     title: str = Form(...),
     slot: str = Form(SLOT_FIRST),
-    file: UploadFile = File(...),
+    files: list[UploadFile] = File(...),
     script: UploadFile | None = File(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    """Upload a .pptx with an optional attached .pdf script into a deck slot.
-    Bumps version, marks new version active for that slot, deactivates older
-    ones in the SAME slot."""
+    """Upload one or more .pptx files (merged in order into a single deck)
+    with an optional attached .pdf script. Bumps version per slot, marks the
+    new version active, deactivates older ones in the SAME slot."""
     _validate_slot(slot)
-    if not file.filename or not file.filename.lower().endswith(".pptx"):
+    if not files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only .pptx files are supported",
+            detail="At least one .pptx file is required",
         )
-    content = await file.read()
-    if len(content) > 50 * 1024 * 1024:  # 50 MB cap
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large (max 50 MB)")
+
+    # Read + validate every uploaded file.
+    contents: list[tuple[bytes, str]] = []
+    total_bytes = 0
+    for f in files:
+        if not f.filename or not f.filename.lower().endswith(".pptx"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Only .pptx files are supported (got {f.filename!r})",
+            )
+        data = await f.read()
+        total_bytes += len(data)
+        contents.append((data, f.filename))
+
+    if total_bytes > 150 * 1024 * 1024:  # 150 MB combined cap
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Total upload too large ({total_bytes / 1024 / 1024:.1f} MB; max 150 MB combined)",
+        )
+    # Keep the variable name `content` for downstream readability in error messages
+    content = contents
 
     # Optional script PDF — read + validate up front so we fail before conversion.
     script_bytes: bytes | None = None
@@ -123,7 +141,7 @@ async def upload_presentation(
 
     presentation_id = str(uuid.uuid4())
     try:
-        slides_dir, slide_count = await convert_and_store(content, presentation_id, file.filename)
+        slides_dir, slide_count, primary_pptx = await convert_and_store(content, presentation_id)
     except Exception as e:  # noqa: BLE001 — surface conversion failures verbatim
         # Clean up partial files
         delete_presentation_files(presentation_id)
@@ -150,7 +168,7 @@ async def upload_presentation(
         version=next_version,
         title=title,
         slot=slot,
-        pptx_path=str(slides_dir / file.filename),
+        pptx_path=str(primary_pptx),
         slides_dir=str(slides_dir),
         slide_count=slide_count,
         is_active=True,

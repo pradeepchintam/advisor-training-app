@@ -11,7 +11,7 @@ type SessionStatus = 'connecting' | 'ready' | 'listening' | 'processing' | 'clie
 
 const STATUS_LABEL: Record<SessionStatus, string> = {
   connecting: 'Connecting...',
-  ready: 'Ready — Click mic to speak',
+  ready: 'Ready — mic on',
   listening: 'Listening...',
   processing: 'Processing...',
   client_speaking: 'Client is speaking...',
@@ -33,6 +33,141 @@ function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60).toString().padStart(2, '0');
   const s = (seconds % 60).toString().padStart(2, '0');
   return `${m}:${s}`;
+}
+
+// Personality emoji used as a fallback when the photo isn't available.
+const PERSONALITY_EMOJI: Record<string, string> = {
+  anxious: '😰', confident: '😎', skeptical: '🤔', analytical: '🧐',
+  emotional: '😢', impulsive: '😤', detail_oriented: '🤓', trusting: '😊',
+};
+
+/**
+ * Animated client avatar — renders the persona photo with subtle "alive"
+ * motion (breathing, periodic blink, head bob while speaking) and a
+ * viseme-driven mouth overlay that pulses in time with the Polly audio.
+ *
+ * `mouthOpenness` is a 0..1 value driven by `audio.currentTime` against the
+ * Polly viseme timeline; 0 = closed, 1 = wide open. When the client isn't
+ * speaking the overlay disappears and the photo just gently breathes.
+ *
+ * Best results when the photo is a head-and-shoulders portrait. For random
+ * stock photos the mouth overlay won't perfectly align with the photo's real
+ * mouth, so we keep it small + glowy rather than trying to fake actual lips.
+ */
+function ClientAvatar({
+  size,
+  isSpeaking,
+  personality,
+  photoUrl,
+  mouthOpenness,
+}: {
+  size: number;
+  isSpeaking: boolean;
+  personality?: string;
+  photoUrl?: string | null;
+  mouthOpenness?: number;
+}) {
+  const openness = Math.max(0, Math.min(1, mouthOpenness ?? 0));
+  const mouthW = 0.22 + openness * 0.10; // 22%..32% of avatar width
+  const mouthH = 0.03 + openness * 0.13; // 3%..16% of avatar height
+  const fallbackEmoji = PERSONALITY_EMOJI[personality ?? ''] ?? '😐';
+
+  return (
+    <div
+      className="relative flex-shrink-0 select-none"
+      style={{ width: size, height: size }}
+    >
+      {/* Pulsing gold ring while speaking */}
+      {isSpeaking && (
+        <span className="absolute -inset-1 rounded-full ring-2 ring-gold-400/70 animate-pulse pointer-events-none" />
+      )}
+
+      {/* Photo / fallback emoji — always breathing, gentle head-bob when speaking */}
+      <div
+        className="absolute inset-0 rounded-full overflow-hidden bg-navy-700 border border-navy-600 flex items-center justify-center"
+        style={{
+          animation: isSpeaking
+            ? 'avatar-breathe 2.4s ease-in-out infinite, avatar-bob 800ms ease-in-out infinite'
+            : 'avatar-breathe 3.2s ease-in-out infinite',
+        }}
+      >
+        {photoUrl ? (
+          <img
+            src={photoUrl}
+            alt="client"
+            className="w-full h-full object-cover"
+            draggable={false}
+          />
+        ) : (
+          <span className="leading-none" style={{ fontSize: size * 0.7 }}>{fallbackEmoji}</span>
+        )}
+
+        {/* Blink overlay — thin dark band across the upper face every few seconds */}
+        <span
+          className="absolute left-0 right-0 bg-navy-950 pointer-events-none"
+          style={{
+            top: '32%',
+            height: '8%',
+            animation: 'avatar-blink 5.3s steps(1, end) infinite',
+            opacity: 0,
+          }}
+        />
+
+        {/* Viseme-driven mouth overlay. Small dark oval with a soft gold glow
+            that scales with the current viseme's openness. Positioned at ~62%
+            Y — roughly where headshots have the mouth. */}
+        {isSpeaking && (
+          <div
+            className="absolute left-1/2 pointer-events-none"
+            style={{
+              top: '62%',
+              transform: `translate(-50%, -50%)`,
+              width: `${mouthW * 100}%`,
+              height: `${mouthH * 100}%`,
+              transition: 'width 70ms linear, height 70ms linear',
+            }}
+          >
+            <div
+              className="w-full h-full rounded-full"
+              style={{
+                background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.78) 35%, rgba(0,0,0,0.0) 85%)',
+                boxShadow: `0 0 ${12 + openness * 18}px ${4 + openness * 8}px rgba(250, 204, 21, ${0.18 + openness * 0.30})`,
+              }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Inline keyframes so this component is self-contained. */}
+      <style>{`
+        @keyframes avatar-breathe {
+          0%, 100% { transform: scale(1); }
+          50%      { transform: scale(1.015); }
+        }
+        @keyframes avatar-bob {
+          0%, 100% { transform: translateY(0); }
+          50%      { transform: translateY(-1.5px); }
+        }
+        @keyframes avatar-blink {
+          0%, 92%  { opacity: 0; }
+          93%, 96% { opacity: 0.82; }
+          97%, 100%{ opacity: 0; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// Map Polly viseme codes to mouth openness 0..1.
+const VISEME_OPENNESS: Record<string, number> = {
+  sil: 0, p: 0, t: 0.18, S: 0.28, T: 0.20, f: 0.15, k: 0.28,
+  i: 0.40, r: 0.32, s: 0.22, u: 0.42, '@': 0.50,
+  a: 0.88, e: 0.42, E: 0.45, o: 0.58, O: 0.72,
+};
+
+function visemeOpennessOf(value: string | undefined): number {
+  if (!value) return 0;
+  return VISEME_OPENNESS[value] ?? 0.3;
 }
 
 export default function Session() {
@@ -78,6 +213,31 @@ export default function Session() {
   // silences. Used to keep the mic UI in "listening" state without relying on
   // the browser's auto end-of-speech events.
   const isTalkingRef = useRef(false);
+
+  // ---- Streaming client response + sentence-level TTS queue --------------
+  // Full text accumulated for the message being streamed in.
+  const streamFullRef = useRef('');
+  // Text not yet split into sentences for the TTS queue.
+  const unspokenBufRef = useRef('');
+  // True while we're between client_response_start and client_response_end.
+  const streamingRef = useRef(false);
+  // Sentence queue (text fragments) + a one-at-a-time playback gate.
+  const ttsQueueRef = useRef<string[]>([]);
+  const ttsPlayingRef = useRef(false);
+  // Index of the live in-progress client bubble in `messages`.
+  const streamMsgIndexRef = useRef<number | null>(null);
+
+  // ---- Always-on interactive mic ----------------------------------------
+  // The mic is hot for the entire session. VAD silence-debounce auto-sends
+  // each utterance; the advisor can optionally Mute to take a phone call.
+  const [muted, setMuted] = useState(false);
+  const mutedRef = useRef(false);
+  const vadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ---- Avatar mouth overlay driven by Polly visemes ----------------------
+  const [mouthOpenness, setMouthOpenness] = useState(0);
+  const currentVisemesRef = useRef<import('../services/api').VisemeMark[]>([]);
+  const visemeRafRef = useRef<number | null>(null);
 
   // Scroll transcript to bottom
   const scrollTranscript = useCallback(() => {
@@ -218,6 +378,154 @@ export default function Session() {
     [session?.persona?.gender, stopAudio, toast]
   );
 
+  // ---- Sentence-level streaming TTS --------------------------------------
+  // Synthesize and play one sentence; recurses to drain the queue. Keeps the
+  // session in 'client_speaking' state until the queue empties AND the server
+  // stream has ended.
+  const playNextSentence = useCallback(async () => {
+    if (ttsPlayingRef.current) return;
+    const next = ttsQueueRef.current.shift();
+    if (!next) {
+      if (!streamingRef.current) setSessionStatus('ready');
+      return;
+    }
+    ttsPlayingRef.current = true;
+    let blobUrl: string | null = null;
+    const gender = session?.persona?.gender as ('male' | 'female' | undefined);
+    try {
+      setSessionStatus('client_speaking');
+      // Fetch audio + visemes in parallel — viseme timing drives the mouth
+      // overlay; if the marks call fails, we just degrade to a static mouth.
+      const [url, marks] = await Promise.all([
+        ttsApi.synthesize(next, gender),
+        ttsApi.marks(next, gender),
+      ]);
+      blobUrl = url;
+      currentVisemesRef.current = (marks || []).filter((m) => m.type === 'viseme');
+
+      const audio = new Audio(blobUrl);
+      audioRef.current = audio;
+
+      // requestAnimationFrame loop: look up the current viseme by elapsed time
+      // and translate it into mouth openness for the overlay.
+      const tick = () => {
+        if (audioRef.current !== audio) {
+          visemeRafRef.current = null;
+          return;
+        }
+        const tMs = audio.currentTime * 1000;
+        const list = currentVisemesRef.current;
+        // Binary-ish search; lists are short (~30-100 marks per sentence).
+        let lo = 0, hi = list.length - 1, idx = -1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (list[mid].time <= tMs) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        const v = idx >= 0 ? list[idx].value : undefined;
+        setMouthOpenness(visemeOpennessOf(v));
+        visemeRafRef.current = requestAnimationFrame(tick);
+      };
+      visemeRafRef.current = requestAnimationFrame(tick);
+
+      await new Promise<void>((resolve) => {
+        audio.onended = () => resolve();
+        audio.onerror = () => resolve();
+        audio.play().catch(() => resolve());
+      });
+      if (audioRef.current === audio) audioRef.current = null;
+    } catch (err) {
+      console.warn('TTS sentence failed:', err);
+    } finally {
+      if (visemeRafRef.current != null) {
+        cancelAnimationFrame(visemeRafRef.current);
+        visemeRafRef.current = null;
+      }
+      setMouthOpenness(0);
+      if (blobUrl && blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl);
+      ttsPlayingRef.current = false;
+      // Continue draining; if interrupted, the queue was cleared so this exits.
+      if (ttsQueueRef.current.length > 0) {
+        void playNextSentence();
+      } else if (!streamingRef.current) {
+        setSessionStatus('ready');
+      }
+    }
+  }, [session?.persona?.gender]);
+
+  const enqueueSentences = useCallback((sentences: string[]) => {
+    if (sentences.length === 0) return;
+    ttsQueueRef.current.push(...sentences);
+    if (!ttsPlayingRef.current) void playNextSentence();
+  }, [playNextSentence]);
+
+  // Extract every complete sentence currently in unspokenBufRef and enqueue
+  // them. Partial trailing text is kept in the buffer for the next chunk.
+  const drainCompleteSentences = useCallback(() => {
+    let buf = unspokenBufRef.current;
+    const out: string[] = [];
+    const re = /^([\s\S]*?[.!?]+["')\]]?)(\s+)/;
+    while (true) {
+      const m = buf.match(re);
+      if (!m) break;
+      const sentence = m[1].trim();
+      if (sentence) out.push(sentence);
+      buf = buf.slice(m[0].length);
+    }
+    unspokenBufRef.current = buf;
+    enqueueSentences(out);
+  }, [enqueueSentences]);
+
+  const handleClientStart = useCallback((timestamp: string) => {
+    streamingRef.current = true;
+    streamFullRef.current = '';
+    unspokenBufRef.current = '';
+    setSessionStatus('client_speaking');
+    setMessages((prev) => {
+      const next = [
+        ...prev,
+        { role: 'client' as const, text: '', timestamp: timestamp || new Date().toISOString() },
+      ];
+      streamMsgIndexRef.current = next.length - 1;
+      return next;
+    });
+  }, []);
+
+  const handleClientChunk = useCallback((chunk: string) => {
+    if (!chunk) return;
+    streamFullRef.current += chunk;
+    unspokenBufRef.current += chunk;
+    setMessages((prev) => {
+      const idx = streamMsgIndexRef.current;
+      if (idx == null || idx < 0 || idx >= prev.length) return prev;
+      const out = prev.slice();
+      out[idx] = { ...out[idx], text: streamFullRef.current };
+      return out;
+    });
+    drainCompleteSentences();
+  }, [drainCompleteSentences]);
+
+  const handleClientEnd = useCallback((fullText: string, timestamp: string) => {
+    streamingRef.current = false;
+    // Reconcile the live bubble with the server's authoritative text.
+    setMessages((prev) => {
+      const idx = streamMsgIndexRef.current;
+      if (idx == null || idx < 0 || idx >= prev.length) return prev;
+      const out = prev.slice();
+      out[idx] = { ...out[idx], text: fullText, timestamp: timestamp || out[idx].timestamp };
+      return out;
+    });
+    streamMsgIndexRef.current = null;
+    // Flush any trailing partial as the final sentence.
+    const tail = unspokenBufRef.current.trim();
+    unspokenBufRef.current = '';
+    streamFullRef.current = '';
+    if (tail) enqueueSentences([tail]);
+    // If nothing is left to play, return to ready immediately.
+    if (ttsQueueRef.current.length === 0 && !ttsPlayingRef.current) {
+      setSessionStatus('ready');
+    }
+  }, [enqueueSentences]);
+
   // MediaRecorder setup
   const startRecording = useCallback(async () => {
     try {
@@ -282,8 +590,17 @@ export default function Session() {
 
       ws.onmessage = (evt) => {
         try {
-          const data = JSON.parse(evt.data as string) as { type: string; text?: string; message?: string };
-          if (data.type === 'client_response' && data.text) {
+          const data = JSON.parse(evt.data as string) as {
+            type: string; text?: string; message?: string; timestamp?: string;
+          };
+          if (data.type === 'client_response_start') {
+            handleClientStart(data.timestamp || '');
+          } else if (data.type === 'client_response_chunk' && data.text) {
+            handleClientChunk(data.text);
+          } else if (data.type === 'client_response_end' && typeof data.text === 'string') {
+            handleClientEnd(data.text, data.timestamp || '');
+          } else if (data.type === 'client_response' && data.text) {
+            // Legacy non-streaming path — used by older servers / replays.
             const msg: ConversationMessage = {
               role: 'client',
               text: data.text,
@@ -339,8 +656,11 @@ export default function Session() {
       return;
     }
 
-    // Note: do NOT auto-stop the client's TTS playback here. The speaker's
-    // audio should only be stopped when the user explicitly chooses to stop it.
+    // Barge-in: pressing Start Talking while the client is speaking counts
+    // as the advisor explicitly choosing to interject, so cut off the
+    // client's TTS immediately. (Dedicated "Interrupt" button below stops
+    // the audio without opening the mic.)
+    stopAudio();
 
     const recognition = new SR();
     recognitionRef.current = recognition;
@@ -363,11 +683,37 @@ export default function Session() {
         if (evt.results[i].isFinal) newFinal += t;
         else interim += t;
       }
+      // Auto barge-in: the moment the advisor's voice produces ANY transcript
+      // text while the client is still talking, silence the TTS queue. This
+      // is the half-duplex stand-in for native audio-level interruption — it
+      // gets the "real-time feel" without the AudioWorklet+Transcribe lift.
+      const hasNewSpeech = newFinal.trim().length > 0 || interim.trim().length > 0;
+      if (hasNewSpeech && (ttsPlayingRef.current || ttsQueueRef.current.length > 0)) {
+        ttsQueueRef.current = [];
+        unspokenBufRef.current = '';
+        stopAudio();
+        if (visemeRafRef.current != null) {
+          cancelAnimationFrame(visemeRafRef.current);
+          visemeRafRef.current = null;
+        }
+        setMouthOpenness(0);
+        setSessionStatus('listening');
+      }
       if (newFinal) {
         pendingTranscriptRef.current = (
           pendingTranscriptRef.current + ' ' + newFinal
         ).trim();
       }
+      // Silence-debounce VAD: 2.5s of no new transcript activity auto-sends
+      // the accumulated text. Any new final/interim resets the timer.
+      if (vadTimerRef.current) clearTimeout(vadTimerRef.current);
+      vadTimerRef.current = setTimeout(() => {
+        const finalText = pendingTranscriptRef.current.trim();
+        pendingTranscriptRef.current = '';
+        setInterimText('');
+        vadTimerRef.current = null;
+        if (finalText) sendAdvisorMessage(finalText);
+      }, 2500);
       // Show pending + interim live so the advisor can see what's captured so far.
       setInterimText(
         (pendingTranscriptRef.current + (interim ? ' ' + interim : '')).trim()
@@ -414,6 +760,58 @@ export default function Session() {
       // running from a previous re-arm — safe to ignore.
     }
   }, [toast]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Mute / unmute toggle — temporarily silences the mic (e.g., advisor needs
+  // to take a phone call). The interactive default is mic-on for the whole
+  // session; this gives an emergency off-switch.
+  const toggleMute = useCallback(() => {
+    setMuted((prev) => {
+      const next = !prev;
+      mutedRef.current = next;
+      if (next) {
+        if (vadTimerRef.current) {
+          clearTimeout(vadTimerRef.current);
+          vadTimerRef.current = null;
+        }
+        isTalkingRef.current = false;
+        try { recognitionRef.current?.stop(); } catch { /* ignored */ }
+        pendingTranscriptRef.current = '';
+        setInterimText('');
+        setSessionStatus('ready');
+      } else {
+        // Re-open the mic immediately.
+        setTimeout(() => startListening(), 0);
+      }
+      return next;
+    });
+  }, [startListening]);
+
+  // Auto-open the mic whenever we're ready and not muted. This is what makes
+  // every session "interactive by default" — no Start button needed.
+  useEffect(() => {
+    if (mutedRef.current) return;
+    if (sessionStatus !== 'ready') return;
+    if (recognitionRef.current && isTalkingRef.current) return;
+    const t = setTimeout(() => {
+      if (!mutedRef.current && sessionStatus === 'ready') startListening();
+    }, 150);
+    return () => clearTimeout(t);
+  }, [sessionStatus, startListening]);
+
+  // Silence the client without opening the mic — pure "shush" control.
+  // Clears the entire sentence-level TTS queue so no further audio plays
+  // even if more chunks are still streaming in from the server.
+  const interruptClient = useCallback(() => {
+    ttsQueueRef.current = [];
+    unspokenBufRef.current = '';
+    stopAudio();
+    if (visemeRafRef.current != null) {
+      cancelAnimationFrame(visemeRafRef.current);
+      visemeRafRef.current = null;
+    }
+    setMouthOpenness(0);
+    setSessionStatus('ready');
+  }, [stopAudio]);
 
   const stopListening = useCallback(() => {
     // Tell the re-arm guard to NOT restart recognition on onend.
@@ -660,17 +1058,13 @@ export default function Session() {
         <div className="w-[40%] min-w-[420px] flex flex-col">
           {/* Compact client header */}
           <div className="px-4 py-3 border-b border-navy-700 bg-navy-800 flex items-center gap-3">
-            {session?.client_image_url ? (
-              <img
-                src={session.client_image_url}
-                alt={session.client_name}
-                className="w-10 h-10 rounded-full object-cover border border-navy-600 flex-shrink-0"
-              />
-            ) : (
-              <div className="w-10 h-10 rounded-full bg-navy-700 border border-navy-600 flex items-center justify-center text-base font-bold text-gold-400 flex-shrink-0">
-                {session?.client_name?.[0] ?? '?'}
-              </div>
-            )}
+            <ClientAvatar
+              size={56}
+              isSpeaking={sessionStatus === 'client_speaking'}
+              personality={persona?.personality_type}
+              photoUrl={session?.client_image_url ?? null}
+              mouthOpenness={mouthOpenness}
+            />
             <div className="flex-1 min-w-0">
               <div className="text-white text-sm font-semibold truncate">{session?.client_name}</div>
               {persona && (
@@ -758,32 +1152,34 @@ export default function Session() {
               </span>
             </div>
 
-            {/* Two explicit talking controls. The advisor decides when to
-                start and stop — the mic does NOT auto-cut on silence. */}
-            <div className="flex items-center justify-center">
-              {sessionStatus === 'listening' ? (
+            {/* Interactive by default — the mic is hot for the whole session.
+                The only controls are an Interrupt (while the client is talking)
+                and a Mute toggle for when the advisor needs to step away. */}
+            <div className="flex items-center justify-center gap-3">
+              {sessionStatus === 'client_speaking' && (
                 <button
-                  onClick={stopListening}
-                  className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white font-semibold px-8 py-3 rounded-lg text-base transition-all shadow-lg shadow-red-500/30"
+                  onClick={interruptClient}
+                  className="flex items-center gap-2 bg-red-700/80 hover:bg-red-700 text-white font-semibold px-5 py-3 rounded-lg text-sm transition-all border border-red-500/50"
+                  title="Stop the client's audio"
                 >
-                  <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                  <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                    <path d="M6 6h12v12H6z" />
                   </svg>
-                  Stop Talking
-                </button>
-              ) : (
-                <button
-                  onClick={startListening}
-                  disabled={sessionStatus === 'processing' || sessionStatus === 'connecting' || sessionStatus === 'ended'}
-                  className="flex items-center gap-2 bg-gold-500 hover:bg-gold-400 disabled:opacity-50 disabled:cursor-not-allowed text-navy-900 font-bold px-8 py-3 rounded-lg text-base transition-all shadow-lg shadow-gold-500/30"
-                >
-                  <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                    <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
-                    <path d="M19 10v2a7 7 0 01-14 0v-2H3v2a9 9 0 008 8.94V23h2v-2.06A9 9 0 0021 12v-2h-2z" />
-                  </svg>
-                  Start Talking
+                  Interrupt
                 </button>
               )}
+              <button
+                onClick={toggleMute}
+                disabled={sessionStatus === 'connecting' || sessionStatus === 'ended'}
+                title={muted ? 'Re-open your mic' : 'Mute your mic temporarily'}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors border ${
+                  muted
+                    ? 'bg-red-900/40 border-red-700 text-red-300 hover:bg-red-900/60'
+                    : 'bg-navy-700 border-navy-600 text-slate-200 hover:bg-navy-600'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {muted ? '🔇 Muted — click to unmute' : '🎙️ Mute mic'}
+              </button>
             </div>
           </div>
         </div>

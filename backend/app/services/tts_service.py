@@ -58,3 +58,51 @@ async def synthesize(text: str, gender: str | None = None) -> bytes:
     if len(text) > 2900:
         text = text[:2900].rsplit(" ", 1)[0]
     return await asyncio.to_thread(_synthesize_sync, text, gender)
+
+
+def _visemes_sync(text: str, gender: str | None) -> list[dict]:
+    """Fetch viseme + word speech marks for the same text/voice so the frontend
+    can drive a lip-sync overlay against the audio's playback time."""
+    import json
+    client = _polly_client()
+    voice = _pick_voice(gender)
+    try:
+        resp = client.synthesize_speech(
+            Text=text,
+            VoiceId=voice,
+            OutputFormat="json",
+            SpeechMarkTypes=["viseme", "word"],
+            Engine=settings.POLLY_ENGINE,
+        )
+    except (BotoCoreError, ClientError) as e:
+        logger.exception("Polly speech-marks request failed for voice=%s", voice)
+        raise RuntimeError(f"TTS marks failed: {e}") from e
+
+    stream = resp.get("AudioStream")
+    if stream is None:
+        return []
+    raw = stream.read()
+    # Polly returns newline-delimited JSON, one mark per line.
+    marks: list[dict] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            marks.append(json.loads(line.decode("utf-8") if isinstance(line, bytes) else line))
+        except Exception:
+            continue
+    return marks
+
+
+async def fetch_visemes(text: str, gender: str | None = None) -> list[dict]:
+    """Async wrapper: returns Polly speech marks (visemes + words) for `text`.
+
+    Each mark looks like: {"time": <ms>, "type": "viseme", "value": "k"} or
+    {"time": <ms>, "type": "word", "start": int, "end": int, "value": str}.
+    """
+    if not text or not text.strip():
+        return []
+    if len(text) > 2900:
+        text = text[:2900].rsplit(" ", 1)[0]
+    return await asyncio.to_thread(_visemes_sync, text, gender)

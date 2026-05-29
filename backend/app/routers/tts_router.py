@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import require_advisor_or_admin
 from app.models import User
-from app.services.tts_service import synthesize
+from app.services.tts_service import fetch_visemes, synthesize
 
 router = APIRouter()
 
@@ -31,3 +31,20 @@ async def tts(
         media_type="audio/mpeg",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/marks", response_model=dict)
+async def tts_marks(
+    payload: TTSRequest,
+    _: User = Depends(require_advisor_or_admin),
+):
+    """Returns Polly speech marks (visemes + words) for the same `text` so the
+    frontend can drive a viseme-aligned lip overlay on top of the client photo
+    while the audio is playing."""
+    try:
+        marks = await fetch_visemes(payload.text, payload.gender)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+    return {"marks": marks}

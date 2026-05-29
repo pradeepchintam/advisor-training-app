@@ -145,18 +145,32 @@ export default function StartAssignment() {
           </div>
         )}
 
-        <button
-          onClick={handleStart}
-          disabled={starting || assignment.status === 'cancelled' || assignment.status === 'completed'}
-          className="w-full bg-gold-500 hover:bg-gold-400 disabled:opacity-60 disabled:cursor-not-allowed text-navy-900 font-bold py-3 rounded-lg transition-colors shadow-lg shadow-gold-500/20"
-        >
-          {starting ? 'Starting session…' : 'Start Session'}
-        </button>
-        {(assignment.status === 'cancelled' || assignment.status === 'completed') && (
-          <p className="text-center text-slate-500 text-xs mt-3">
-            This assignment is {assignment.status}.
-          </p>
-        )}
+        {(() => {
+          const todayStr = new Date().toISOString().slice(0, 10);
+          const isFuture = assignment.target_date > todayStr;
+          const blocked = isFuture || assignment.status === 'cancelled' || assignment.status === 'completed';
+          return (
+            <>
+              <button
+                onClick={handleStart}
+                disabled={starting || blocked}
+                className="w-full bg-gold-500 hover:bg-gold-400 disabled:opacity-60 disabled:cursor-not-allowed text-navy-900 font-bold py-3 rounded-lg transition-colors shadow-lg shadow-gold-500/20"
+              >
+                {starting ? 'Starting session…' : 'Start Session'}
+              </button>
+              {isFuture && (
+                <p className="text-center text-slate-500 text-xs mt-3">
+                  This session is scheduled for {assignment.target_date} and can't be started before then.
+                </p>
+              )}
+              {(assignment.status === 'cancelled' || assignment.status === 'completed') && (
+                <p className="text-center text-slate-500 text-xs mt-3">
+                  This assignment is {assignment.status}.
+                </p>
+              )}
+            </>
+          );
+        })()}
       </div>
 
       <button

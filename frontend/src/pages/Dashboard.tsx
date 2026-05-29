@@ -48,42 +48,89 @@ function todayIso(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function AssignmentCard({ a, overdue }: { a: Assignment; overdue: boolean }) {
+function StatusPill({ status }: { status: Assignment['status'] }) {
+  const map: Record<string, string> = {
+    pending: 'bg-blue-900/40 text-blue-300',
+    in_progress: 'bg-yellow-900/40 text-yellow-300',
+    completed: 'bg-green-900/40 text-green-300',
+    cancelled: 'bg-navy-700 text-slate-400',
+  };
   return (
-    <div
-      className={`bg-navy-800 border rounded-xl p-5 ${
-        overdue ? 'border-red-500/40' : 'border-gold-500/30'
-      }`}
-    >
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex-1 min-w-0">
-          <div className="text-xs text-gold-400 uppercase tracking-wider font-semibold mb-0.5">
-            {a.profile_name}
-          </div>
-          <div className="text-white font-medium truncate">
-            {a.persona.name || a.profile_name}
-          </div>
-          <div className="text-slate-500 text-xs mt-0.5">
-            {a.persona.age_group?.replace('_', ' ')} · {a.persona.financial_situation} ·{' '}
-            {a.persona.personality_type}
-          </div>
-        </div>
-        {overdue && (
-          <span className="inline-flex px-2 py-0.5 rounded bg-red-900/50 text-red-300 text-[10px] uppercase tracking-wider font-semibold">
-            Overdue
-          </span>
-        )}
-      </div>
-      <div className="flex items-center justify-between text-xs text-slate-500 mb-4">
-        <span>Due {a.target_date}</span>
-        {a.assigned_by_name && <span>by {a.assigned_by_name}</span>}
-      </div>
-      <Link
-        to={`/sessions/start/${a.id}`}
-        className="block w-full text-center bg-gold-500 hover:bg-gold-400 text-navy-900 font-bold py-2 rounded-lg transition-colors text-sm"
-      >
-        Start Session →
-      </Link>
+    <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${map[status] ?? 'bg-navy-700 text-slate-400'}`}>
+      {status.replace('_', ' ')}
+    </span>
+  );
+}
+
+/**
+ * Tabular list of assignments.
+ *  - `startable` table (today/overdue) shows a Start button.
+ *  - non-startable table (future) shows the scheduled date only — advisors
+ *    cannot start a session before its scheduled day.
+ */
+function AssignmentTable({
+  assignments,
+  startable,
+  today,
+}: {
+  assignments: Assignment[];
+  startable: boolean;
+  today: string;
+}) {
+  return (
+    <div className="bg-navy-800 border border-navy-700 rounded-xl overflow-hidden">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-xs text-slate-500 uppercase tracking-wider border-b border-navy-700">
+            <th className="px-5 py-3 font-medium">Appointment</th>
+            <th className="px-4 py-3 font-medium">Client</th>
+            <th className="px-4 py-3 font-medium">{startable ? 'Due' : 'Scheduled'}</th>
+            <th className="px-4 py-3 font-medium">Status</th>
+            <th className="px-4 py-3 font-medium text-right">{startable ? 'Action' : ''}</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-navy-700">
+          {assignments.map((a) => {
+            const overdue = startable && a.target_date < today;
+            // Defensive: never allow starting a session before its scheduled date.
+            const canStart = startable && a.target_date <= today;
+            return (
+              <tr key={a.id} className="hover:bg-navy-700/40 transition-colors">
+                <td className="px-5 py-3">
+                  <div className="text-white font-medium">{a.profile_name}</div>
+                  <div className="text-slate-500 text-xs mt-0.5">
+                    {a.persona.age_group?.replace('_', ' ')} · {a.persona.financial_situation} · {a.persona.personality_type}
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-slate-300">{a.persona.name || '—'}</td>
+                <td className="px-4 py-3">
+                  <span className="text-slate-300">{a.target_date}</span>
+                  {overdue && (
+                    <span className="ml-2 inline-flex px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 text-[10px] uppercase tracking-wider font-semibold">
+                      Overdue
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3"><StatusPill status={a.status} /></td>
+                <td className="px-4 py-3 text-right">
+                  {canStart ? (
+                    <Link
+                      to={`/sessions/start/${a.id}`}
+                      className="inline-flex items-center bg-gold-500 hover:bg-gold-400 text-navy-900 font-bold px-4 py-1.5 rounded-lg transition-colors text-xs"
+                    >
+                      Start →
+                    </Link>
+                  ) : (
+                    <span className="text-slate-500 text-xs italic">
+                      Available {a.target_date}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -163,7 +210,7 @@ export default function Dashboard() {
       {/* Assigned sessions — advisors only */}
       {!isAdmin && myAssignments && (
         <>
-          {/* Today's assignments */}
+          {/* Today's assignments — startable */}
           <div className="mb-8">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-semibold text-white">Today's Assigned Sessions</h2>
@@ -173,18 +220,14 @@ export default function Dashboard() {
             </div>
             {myAssignments.today.length === 0 ? (
               <div className="bg-navy-800 border border-navy-700 rounded-xl px-5 py-6 text-center text-slate-500 text-sm">
-                Nothing assigned for today. Nice — you're caught up.
+                Nothing due today. Nice — you're caught up.
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {myAssignments.today.map((a) => (
-                  <AssignmentCard key={a.id} a={a} overdue={a.target_date < today} />
-                ))}
-              </div>
+              <AssignmentTable assignments={myAssignments.today} startable today={today} />
             )}
           </div>
 
-          {/* Upcoming assignments */}
+          {/* Upcoming assignments — NOT startable until their scheduled date */}
           {myAssignments.upcoming.length > 0 && (
             <div className="mb-8">
               <div className="flex items-center justify-between mb-3">
@@ -193,11 +236,10 @@ export default function Dashboard() {
                   {myAssignments.upcoming.length} scheduled
                 </span>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {myAssignments.upcoming.slice(0, 6).map((a) => (
-                  <AssignmentCard key={a.id} a={a} overdue={false} />
-                ))}
-              </div>
+              <AssignmentTable assignments={myAssignments.upcoming} startable={false} today={today} />
+              <p className="text-slate-500 text-xs mt-2">
+                Upcoming sessions become available to start on their scheduled date.
+              </p>
             </div>
           )}
         </>

@@ -176,11 +176,18 @@ export const presentationsApi = {
       throw err;
     }
   },
-  upload: async (title: string, file: File, script?: File | null, slot: string = 'first'): Promise<Presentation> => {
+  upload: async (
+    title: string,
+    files: File | File[],
+    script?: File | null,
+    slot: string = 'first',
+  ): Promise<Presentation> => {
     const formData = new FormData();
     formData.append('title', title);
     formData.append('slot', slot);
-    formData.append('file', file);
+    // Backend accepts list[UploadFile]; append each File under the `files` key.
+    const list = Array.isArray(files) ? files : [files];
+    for (const f of list) formData.append('files', f);
     if (script) formData.append('script', script);
     // Content-Type is handled by the axios request interceptor, which strips
     // the default JSON header for FormData so the browser sets the multipart
@@ -312,12 +319,30 @@ export const assignmentsApi = {
 };
 
 // Text-to-speech via AWS Polly
+export interface VisemeMark {
+  time: number; // milliseconds from start of audio
+  type: 'viseme' | 'word';
+  value: string;
+  start?: number;
+  end?: number;
+}
+
 export const ttsApi = {
   /** Synthesize text to mp3 bytes. Returns an object URL that <audio src> can use. */
   synthesize: async (text: string, gender?: 'male' | 'female' | null): Promise<string> => {
     const response = await api.post('/tts', { text, gender }, { responseType: 'blob' });
     const blob = response.data as Blob;
     return URL.createObjectURL(blob);
+  },
+  /** Polly viseme + word speech marks for the same text, used to drive the
+   *  client avatar's lip overlay. Each mark has `time` in ms. */
+  marks: async (text: string, gender?: 'male' | 'female' | null): Promise<VisemeMark[]> => {
+    try {
+      const response = await api.post('/tts/marks', { text, gender });
+      return (response.data?.marks ?? []) as VisemeMark[];
+    } catch {
+      return [];
+    }
   },
 };
 

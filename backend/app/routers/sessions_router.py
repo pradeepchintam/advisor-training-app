@@ -17,6 +17,31 @@ from app.services.storage_service import get_recording_path, get_recording_url, 
 router = APIRouter()
 
 
+def _random_full_name(gender: str, seed: str | None = None) -> str:
+    """Pick a random first + last name. If `seed` is provided, the choice is
+    deterministic — so the same persona stays the same person across that
+    advisor's 1st/2nd/3rd appointments, while still differing per advisor."""
+    import random as _random
+    from app.services.persona_service import MALE_FIRST_NAMES, FEMALE_FIRST_NAMES, LAST_NAMES
+    rng = _random.Random(seed) if seed else _random
+    pool = MALE_FIRST_NAMES if (gender or "").lower() == "male" else FEMALE_FIRST_NAMES
+    return f"{rng.choice(pool)} {rng.choice(LAST_NAMES)}"
+
+
+def _randomize_persona_names(persona, *, seed: str | None) -> None:
+    """Mutates the ClientPersona in-place to give it a fresh (or seeded) name.
+
+    The persona's existing name is replaced with a random pick. If the persona
+    is a couple, the spouse's name is regenerated too (with a per-spouse seed
+    so the pair stays a stable pair, not just a stable individual)."""
+    persona.name = _random_full_name(persona.gender, seed=seed)
+    if (getattr(persona, "client_type", "") == "couple") or persona.spouse_gender:
+        persona.spouse_name = _random_full_name(
+            persona.spouse_gender or "female",
+            seed=(seed + ":spouse") if seed else None,
+        )
+
+
 async def _fetch_client_image(gender: str) -> str:
     """Fetch a profile image URL from randomuser.me."""
     gender_param = "male" if gender.lower() == "male" else "female"
@@ -307,6 +332,14 @@ async def create_session(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="This assignment was cancelled by the admin",
             )
+        # Cannot start a session before its scheduled date.
+        from datetime import date as _date
+        if assignment.target_date > _date.today():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"This session is scheduled for {assignment.target_date.isoformat()} "
+                       f"and can't be started before then.",
+            )
 
         p_result = await db.execute(
             select(SessionProfile).where(SessionProfile.id == assignment.profile_id)
@@ -323,6 +356,12 @@ async def create_session(
         source = "assigned"
         assignment_id = assignment.id
         appointment_type = profile.appointment_type
+
+        # Capture the curriculum's canonical name BEFORE we randomize, so the
+        # same client keeps the same randomized name across this advisor's
+        # 1st/2nd/3rd appointments with them.
+        original_name = persona.name
+        _randomize_persona_names(persona, seed=f"{current_user.id}:{original_name}")
 
         # Persona may be partial (created from picker without name/backstory)
         if not persona.name or not persona.backstory:
@@ -341,6 +380,9 @@ async def create_session(
             )
         persona = payload.persona
         appointment_type = None  # untyped → falls back to first-appointment deck
+        # Self-initiated sessions get a freshly randomized name every time —
+        # the advisor shouldn't see the same name twice in a row.
+        _randomize_persona_names(persona, seed=None)
         if not persona.name or not persona.backstory:
             persona = generate_persona_details(persona.model_dump())
 

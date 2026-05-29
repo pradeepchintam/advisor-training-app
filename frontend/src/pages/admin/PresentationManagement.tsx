@@ -74,7 +74,7 @@ function SlotSection({
 }) {
   const toast = useToast();
   const [title, setTitle] = useState('');
-  const [file, setFile] = useState<File | null>(null);
+  const [pptFiles, setPptFiles] = useState<File[]>([]);
   const [scriptFile, setScriptFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [busyRow, setBusyRow] = useState<string | null>(null);
@@ -82,18 +82,28 @@ function SlotSection({
   const scriptRef = useRef<HTMLInputElement | null>(null);
 
   const active = presentations.find((p) => p.is_active);
+  const totalPptBytes = pptFiles.reduce((sum, f) => sum + f.size, 0);
 
   const resetForm = () => {
-    setTitle(''); setFile(null); setScriptFile(null);
+    setTitle(''); setPptFiles([]); setScriptFile(null);
     if (fileRef.current) fileRef.current.value = '';
     if (scriptRef.current) scriptRef.current.value = '';
   };
 
+  const removePpt = (index: number) => {
+    setPptFiles((files) => files.filter((_, i) => i !== index));
+  };
+
   const handleUpload = async () => {
     if (!title.trim()) { toast.error(`${label}: enter a title`); return; }
-    if (!file) { toast.error(`${label}: pick a .pptx file`); return; }
-    if (!file.name.toLowerCase().endsWith('.pptx')) {
-      toast.error('Only .pptx files are supported (.ppt won’t work)');
+    if (pptFiles.length === 0) { toast.error(`${label}: pick at least one .pptx file`); return; }
+    const bad = pptFiles.find((f) => !f.name.toLowerCase().endsWith('.pptx'));
+    if (bad) {
+      toast.error(`Only .pptx files are supported (got ${bad.name})`);
+      return;
+    }
+    if (totalPptBytes > 150 * 1024 * 1024) {
+      toast.error(`Total size ${(totalPptBytes / 1024 / 1024).toFixed(1)} MB exceeds the 150 MB cap`);
       return;
     }
     if (scriptFile && !scriptFile.name.toLowerCase().endsWith('.pdf')) {
@@ -102,8 +112,9 @@ function SlotSection({
     }
     setUploading(true);
     try {
-      await presentationsApi.upload(title.trim(), file, scriptFile, slot);
-      toast.success(`${label}: uploaded${scriptFile ? ' + script' : ''} and activated`);
+      await presentationsApi.upload(title.trim(), pptFiles, scriptFile, slot);
+      const fileSummary = pptFiles.length > 1 ? ` (${pptFiles.length} files merged)` : '';
+      toast.success(`${label}: uploaded${fileSummary}${scriptFile ? ' + script' : ''} and activated`);
       resetForm();
       await onChanged();
     } catch (err: unknown) {
@@ -175,12 +186,46 @@ function SlotSection({
           />
         </div>
         <div>
-          <label className="block text-xs text-slate-400 mb-1">.pptx <span className="text-red-400">*</span></label>
+          <label className="block text-xs text-slate-400 mb-1">
+            .pptx <span className="text-red-400">*</span>
+            <span className="text-slate-600 font-normal"> (select one or more — merged in order)</span>
+          </label>
           <input
-            ref={fileRef} type="file" accept=".pptx"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            ref={fileRef} type="file" accept=".pptx" multiple
+            onChange={(e) => {
+              const list = Array.from(e.target.files ?? []);
+              if (list.length) setPptFiles((prev) => [...prev, ...list]);
+              // Reset the input so re-selecting the same file fires onChange.
+              e.target.value = '';
+            }}
             className="w-full text-slate-300 text-xs file:mr-2 file:py-1.5 file:px-2 file:rounded file:border-0 file:bg-navy-700 file:text-slate-200 hover:file:bg-navy-600"
           />
+          {pptFiles.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {pptFiles.map((f, i) => (
+                <div key={`${f.name}-${i}`} className="flex items-center justify-between bg-navy-900 border border-navy-700 rounded px-2 py-1 text-xs">
+                  <span className="text-slate-300 truncate">
+                    <span className="text-slate-500 mr-1.5">{i + 1}.</span>
+                    {f.name}
+                    <span className="text-slate-600 ml-1.5">({(f.size / 1024 / 1024).toFixed(1)} MB)</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removePpt(i)}
+                    className="text-red-400 hover:text-red-300 text-xs ml-2 flex-shrink-0"
+                    title="Remove"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {pptFiles.length > 1 && (
+                <div className="text-[10px] text-slate-500 mt-1">
+                  Total: {(totalPptBytes / 1024 / 1024).toFixed(1)} MB · will be merged into one deck
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div>
           <label className="block text-xs text-slate-400 mb-1">Script .pdf <span className="text-slate-600">(optional)</span></label>

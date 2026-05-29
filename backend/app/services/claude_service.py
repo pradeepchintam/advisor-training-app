@@ -16,8 +16,11 @@ import anthropic
 from app.config import settings
 from app.schemas import ClientPersona
 
-# Initialise the Anthropic client once at module load time.
+# Initialise both sync and async Anthropic clients once at module load time.
+# Async is used by the streaming endpoint so we can forward tokens to the
+# WebSocket without spinning up a thread + queue bridge.
 _client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+_async_client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +115,84 @@ Current progress: This is exchange #{covered_count + 1}. Early exchanges should 
         return resp.content[0].text
 
     return await asyncio.to_thread(_call)
+
+
+# ---------------------------------------------------------------------------
+# Streaming variant — yields tokens as they arrive so the UI can render the
+# client's response incrementally and start TTS sentence-by-sentence.
+# ---------------------------------------------------------------------------
+
+from typing import Awaitable, Callable  # noqa: E402  (deliberate late import)
+
+
+def _build_simulate_system_prompt(
+    persona: ClientPersona, conversation_history: list[dict], topics_formatted: str
+) -> str:
+    """Same prompt used by simulate_client_response. Extracted so the streaming
+    variant doesn't drift from the non-streaming one."""
+    covered_count = len([m for m in conversation_history if m.get("role") == "client"])
+    return f"""You are roleplaying as {persona.name}, a {persona.age}-year-old {persona.marital_status} {persona.occupation}.
+
+This is your FIRST meeting with this fiduciary advisor. You are a prospective client — you haven't signed any paperwork, you don't know this person yet, and you're here mostly to listen and decide whether you trust them enough to work together. The advisor is leading the meeting and will walk you through their firm's presentation deck before getting into your specific situation.
+
+PERSONALITY: You are {persona.personality_type} and {persona.communication_style} in communication.
+PRIVATE BACKGROUND (don't volunteer this — wait to be asked):
+- Financial situation: {persona.financial_situation}, net worth: {persona.estimated_net_worth}
+- Risk tolerance: {persona.risk_tolerance}
+- Goals weighing on your mind: {", ".join(persona.primary_concerns) if persona.primary_concerns else "general financial planning"}
+- Backstory: {persona.backstory}
+
+BEHAVIOR GUIDELINES — read these carefully:
+- Stay in character at ALL times. Never break character or mention you are an AI.
+- Keep replies SHORT (1-3 sentences typically). Real prospective clients don't monologue, especially in the first few minutes.
+- LET THE ADVISOR LEAD. Don't volunteer your goals, net worth, employment details, or family situation unless they specifically ask. If they're walking through slides, listen — react with brief questions or acknowledgements ("That makes sense", "What does that mean for someone like me?", "Hmm, okay").
+- Open the conversation politely and a bit reserved — the way a real person would when meeting a stranger who's about to handle their money. Pleasantries, maybe small talk about your day or how you found the firm — NOT your retirement plan.
+- Only share financial details proportional to what the advisor asks. If they ask "what brings you in today?", give a one-sentence high-level answer (e.g. "I've been thinking about retirement, my friend recommended you") — not your full backstory.
+- Match your personality: if anxious, sound a little hesitant; if skeptical, ask "why should I trust you?"; if analytical, ask precise follow-up questions; if friendly, be warm but still cautious.
+- If the advisor jumps straight to numbers without rapport, react naturally to that (slightly thrown off, redirect, etc.) — don't reward bad behavior by immediately complying.
+- You may glance at the slides they show and react ("That's a useful framework", "Can you explain that point again?") but you don't see the slides directly — judge from what they describe.
+
+TOPICS THE ADVISOR IS EXPECTED TO COVER OVER THE FULL CONVERSATION (this is for context — don't bring them up yourself):
+{topics_formatted}
+
+Current progress: This is exchange #{covered_count + 1}. Early exchanges should be light/relational; financial depth comes later as the advisor earns it."""
+
+
+async def stream_client_response(
+    persona: ClientPersona,
+    conversation_history: list[dict],
+    advisor_message: str,
+    questionnaire_topics: list[dict],
+    on_chunk: Callable[[str], Awaitable[None]],
+) -> str:
+    """Stream the simulated client's reply token-by-token.
+
+    `on_chunk(text)` is awaited for each incremental text fragment. Returns
+    the full concatenated text so the caller can persist it.
+    """
+    topics_formatted = _format_topics(questionnaire_topics)
+    system_prompt = _build_simulate_system_prompt(persona, conversation_history, topics_formatted)
+    messages = _build_conversation_messages(conversation_history, advisor_message)
+
+    full: list[str] = []
+    async with _async_client.messages.stream(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=512,
+        system=[
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=messages,
+    ) as stream:
+        async for text in stream.text_stream:
+            if not text:
+                continue
+            full.append(text)
+            await on_chunk(text)
+    return "".join(full)
 
 
 # ---------------------------------------------------------------------------

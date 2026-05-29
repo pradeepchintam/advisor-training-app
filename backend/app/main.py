@@ -219,13 +219,31 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                     ts = datetime.now(timezone.utc).isoformat()
                     conversation.append({"role": "advisor", "text": msg.text, "timestamp": ts})
 
-                    # Get client response from Claude
+                    # Tell the frontend a streamed reply is starting so it can
+                    # spin up a live message bubble + TTS sentence queue.
+                    start_ts = datetime.now(timezone.utc).isoformat()
+                    await websocket.send_json({
+                        "type": "client_response_start",
+                        "timestamp": start_ts,
+                    })
+
+                    # Stream the response. Each text chunk is forwarded to the
+                    # WS as it arrives.
+                    from app.services.claude_service import stream_client_response
+
+                    async def _forward(chunk: str) -> None:
+                        await websocket.send_json({
+                            "type": "client_response_chunk",
+                            "text": chunk,
+                        })
+
                     try:
-                        client_response = await simulate_client_response(
+                        client_response = await stream_client_response(
                             persona=persona,
-                            conversation_history=conversation[:-1],  # history before this message
+                            conversation_history=conversation[:-1],
                             advisor_message=msg.text,
                             questionnaire_topics=questionnaire_topics,
+                            on_chunk=_forward,
                         )
                     except Exception as e:
                         await websocket.send_json(
@@ -233,23 +251,20 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                         )
                         continue
 
-                    # Store client response
+                    # Persist the finalized client message.
                     client_ts = datetime.now(timezone.utc).isoformat()
                     conversation.append(
                         {"role": "client", "text": client_response, "timestamp": client_ts}
                     )
-
-                    # Persist conversation to DB
                     session.conversation = list(conversation)
                     await db.commit()
 
-                    await websocket.send_json(
-                        {
-                            "type": "client_response",
-                            "text": client_response,
-                            "timestamp": client_ts,
-                        }
-                    )
+                    # End-of-stream marker (frontend reconciles full text).
+                    await websocket.send_json({
+                        "type": "client_response_end",
+                        "text": client_response,
+                        "timestamp": client_ts,
+                    })
 
         except WebSocketDisconnect:
             # Mark session as completed on disconnect if still active
