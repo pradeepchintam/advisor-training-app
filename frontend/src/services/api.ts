@@ -231,6 +231,15 @@ export const presentationsApi = {
     });
     return response.data;
   },
+  /**
+   * Microsoft Office Online viewer URL for the deck. Returns null when the
+   * embed isn't available (no S3 bucket / no local PPTX); caller falls back
+   * to the static PNG renderer.
+   */
+  getEmbedUrl: async (id: string): Promise<{ embed_url: string | null; expires_in: number | null }> => {
+    const response = await api.get(`/presentations/${id}/embed-url`);
+    return response.data;
+  },
 };
 
 // Training scripts (markdown)

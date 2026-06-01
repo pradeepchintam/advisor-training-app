@@ -32,7 +32,7 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@trajanwealth.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-TempAdmin123!}
     ports:
-      - "8000:8000"
+      - "8081:8000"
     volumes:
       - recordings_data:/app/recordings
     restart: unless-stopped

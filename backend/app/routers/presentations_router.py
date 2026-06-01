@@ -18,6 +18,7 @@ from app.services.pptx_service import (
     convert_and_store,
     delete_presentation_files,
     delete_script_pdf,
+    get_pptx_embed_url,
     get_script_pdf_bytes,
     get_slide_bytes,
     store_script_pdf,
@@ -307,6 +308,32 @@ async def delete_presentation(
     delete_presentation_files(presentation_id)
     await db.delete(target)
     return {"message": "Deleted", "id": presentation_id}
+
+
+@router.get("/{presentation_id}/embed-url", response_model=dict)
+async def get_embed_url(
+    presentation_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_advisor_or_admin),
+):
+    """Return a Microsoft Office Online viewer URL for this deck.
+
+    The PPTX is staged in S3 (idempotently) and a short-lived presigned URL
+    is wrapped in the office viewer's `src` parameter. When the analysis
+    bucket isn't configured or no local PPTX exists, returns
+    `{embed_url: null}` so the frontend falls back to the static PNG path.
+    """
+    result = await db.execute(select(Presentation).where(Presentation.id == presentation_id))
+    p = result.scalar_one_or_none()
+    if p is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Presentation not found")
+
+    embed_url = get_pptx_embed_url(presentation_id)
+    return {
+        "embed_url": embed_url,
+        # Echo the TTL so the frontend can decide when to re-fetch.
+        "expires_in": 3600 if embed_url else None,
+    }
 
 
 @router.get("/{presentation_id}/slides/{slide_number}")

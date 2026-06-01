@@ -194,6 +194,9 @@ export default function Session() {
   const [slidePerDeck, setSlidePerDeck] = useState<Record<string, number>>({});
   const [slideBlobUrl, setSlideBlobUrl] = useState<string | null>(null);
   const [slideLoading, setSlideLoading] = useState(false);
+  // Embed URL per deck. When set, the slide pane renders Microsoft Office
+  // Online (animations preserved) instead of the static PNG.
+  const [embedUrls, setEmbedUrls] = useState<Record<string, string>>({});
 
   const presentation = decks[activeDeckIndex] ?? null;
   const currentSlide = presentation ? (slidePerDeck[presentation.id] ?? 1) : 1;
@@ -263,6 +266,19 @@ export default function Session() {
   const currentVisemesRef = useRef<import('../services/api').VisemeMark[]>([]);
   const visemeRafRef = useRef<number | null>(null);
 
+  // ---- AWS Transcribe live streaming path --------------------------------
+  // AudioContext + Worklet capture audio from the recording stream, downsample
+  // to 16 kHz PCM, and post chunks to the main thread. We forward each chunk
+  // as a binary WS frame to the backend, which pipes it to AWS Transcribe.
+  // The backend sends back transcript_partial / transcript_final messages.
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const captureSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  // True when live transcription is active. We bias toward this path; if it
+  // fails to start (no SDK, bad creds), we fall back to Web Speech.
+  const [transcribeLive, setTranscribeLive] = useState(false);
+  const transcribeLiveRef = useRef(false);
+
   // Scroll transcript to bottom
   const scrollTranscript = useCallback(() => {
     if (transcriptRef.current) {
@@ -315,21 +331,51 @@ export default function Session() {
       try { mediaRecorderRef.current?.stop(); } catch { /* already stopped */ }
       isTalkingRef.current = false;
       try { recognitionRef.current?.abort(); } catch { /* already stopped */ }
+      // Tear down the AudioWorklet pipeline (inline so we don't depend on
+      // stopLiveTranscribe being declared yet).
+      transcribeLiveRef.current = false;
+      if (workletNodeRef.current) {
+        try { workletNodeRef.current.disconnect(); } catch { /* ignore */ }
+        workletNodeRef.current = null;
+      }
+      if (captureSourceRef.current) {
+        try { captureSourceRef.current.disconnect(); } catch { /* ignore */ }
+        captureSourceRef.current = null;
+      }
+      if (audioContextRef.current) {
+        try { void audioContextRef.current.close(); } catch { /* ignore */ }
+        audioContextRef.current = null;
+      }
       stopAudio();
     };
   }, [stopAudio]);
 
   // Fetch the deck(s) for THIS session based on its appointment type.
   // Third appointments return two decks (Annuity + Private Equity).
+  // After decks load, also fetch the Office Online embed URL for each so
+  // we can render the animated viewer when available.
   useEffect(() => {
     if (!id) return;
+    let cancelled = false;
     sessionsApi.presentations(id)
       .then((list) => {
+        if (cancelled) return;
         setDecks(list);
         setActiveDeckIndex(0);
         setSlidePerDeck(Object.fromEntries(list.map((d) => [d.id, 1])));
+        // Fetch embed URLs in parallel. Each is independent — one failing
+        // doesn't block the others, and a null result triggers PNG fallback.
+        list.forEach((d) => {
+          presentationsApi.getEmbedUrl(d.id)
+            .then((r) => {
+              if (cancelled || !r.embed_url) return;
+              setEmbedUrls((prev) => ({ ...prev, [d.id]: r.embed_url as string }));
+            })
+            .catch(() => { /* fall back to PNG silently */ });
+        });
       })
       .catch(() => setDecks([]));
+    return () => { cancelled = true; };
   }, [id]);
 
   // Whenever the slide number changes (or the deck loads), fetch that slide's PNG.
@@ -582,6 +628,14 @@ export default function Session() {
     try {
       const audioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
       audioTrack = audioStream.getAudioTracks()[0] ?? null;
+      // Kick off the live AWS Transcribe pipeline. We do this as soon as we
+      // have an audio track so the worklet starts producing PCM frames even
+      // before MediaRecorder is wired up. Frames are buffered/dropped while
+      // the WS isn't open yet — no harm.
+      if (audioTrack) {
+        // Fire-and-forget; errors fall back to Web Speech inside the helper.
+        void startLiveTranscribe(audioTrack);
+      }
     } catch (err) {
       const e = err as { name?: string; message?: string };
       const friendly = explain[e.name || ''] || e.message || 'unknown error';
@@ -680,7 +734,49 @@ export default function Session() {
           const data = JSON.parse(evt.data as string) as {
             type: string; text?: string; message?: string; timestamp?: string;
           };
-          if (data.type === 'client_response_start') {
+          if (data.type === 'transcript_partial' && data.text) {
+            // Live interim transcript from AWS Transcribe. Show as the
+            // advisor's in-progress speech (same slot as Web Speech interim).
+            setInterimText(data.text);
+          } else if (data.type === 'transcript_final' && data.text) {
+            // Final utterance committed by Transcribe. Backend has already
+            // kicked off Claude; we just need to add the advisor's bubble.
+            const text = data.text.trim();
+            setInterimText('');
+            if (text) {
+              const advMsg: ConversationMessage = {
+                role: 'advisor',
+                text,
+                timestamp: new Date().toISOString(),
+              };
+              setMessages((prev) => [...prev, advMsg]);
+            }
+          } else if (data.type === 'auto_interrupt') {
+            // Server-side barge-in: advisor started talking during client TTS.
+            // Mirror the manual Interrupt button's local cleanup.
+            ttsQueueRef.current = [];
+            unspokenBufRef.current = '';
+            stopAudio();
+            if (visemeRafRef.current != null) {
+              cancelAnimationFrame(visemeRafRef.current);
+              visemeRafRef.current = null;
+            }
+            setMouthOpenness(0);
+            streamingRef.current = false;
+            streamMsgIndexRef.current = null;
+            setSessionStatus('listening');
+          } else if (data.type === 'client_response_cancelled') {
+            // Claude stream was cancelled mid-flight (barge-in). Clean up
+            // the in-progress bubble.
+            streamingRef.current = false;
+            streamMsgIndexRef.current = null;
+          } else if (data.type === 'transcribe_unavailable') {
+            // Backend couldn't start Transcribe; we'll fall back to Web
+            // Speech. Toast once so the advisor knows latency may be worse.
+            transcribeLiveRef.current = false;
+            setTranscribeLive(false);
+            toast.warning(`Real-time transcription unavailable, falling back to slower path: ${data.message || ''}`);
+          } else if (data.type === 'client_response_start') {
             handleClientStart(data.timestamp || '');
           } else if (data.type === 'client_response_chunk' && data.text) {
             handleClientChunk(data.text);
@@ -708,7 +804,7 @@ export default function Session() {
         if (cancelled) return;
         setSessionStatus('error');
         toast.error(
-          'WebSocket connection failed. Check that the backend is running on port 8000 ' +
+          'WebSocket connection failed. Check that the backend is running on port 8081 ' +
           'and that your auth token is still valid. See browser console for details.'
         );
       };
@@ -884,6 +980,63 @@ export default function Session() {
     setSessionStatus('ready');
   }, [isRecording, startRecording]);
 
+  // Start the AudioWorklet pipeline that streams 16 kHz PCM frames to the
+  // backend over the WebSocket. Backend pipes them into AWS Transcribe and
+  // returns transcript_partial / transcript_final messages. Far more
+  // responsive than Web Speech (sub-second partials, server-side barge-in).
+  const startLiveTranscribe = useCallback(async (audioTrack: MediaStreamTrack) => {
+    try {
+      const ctx = new AudioContext();
+      // Worklet module served by Vite from /public.
+      await ctx.audioWorklet.addModule('/pcm-capture-worklet.js');
+      const source = ctx.createMediaStreamSource(new MediaStream([audioTrack]));
+      const node = new AudioWorkletNode(ctx, 'pcm-capture-worklet');
+
+      // Worklet posts Int16Array chunks (~100 ms each). Forward them as
+      // binary WS frames. We deliberately don't connect `node` to the audio
+      // destination — that would loop the advisor's voice back into the
+      // speakers and confuse them (and the recognizer).
+      node.port.onmessage = (e) => {
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try {
+          // e.data is an Int16Array; sending it sends its underlying buffer.
+          ws.send(e.data as unknown as ArrayBufferView);
+        } catch {
+          /* socket likely closed mid-frame */
+        }
+      };
+
+      source.connect(node);
+      audioContextRef.current = ctx;
+      workletNodeRef.current = node;
+      captureSourceRef.current = source;
+      transcribeLiveRef.current = true;
+      setTranscribeLive(true);
+    } catch (err) {
+      console.warn('Live transcribe setup failed; falling back to Web Speech:', err);
+      transcribeLiveRef.current = false;
+      setTranscribeLive(false);
+    }
+  }, []);
+
+  const stopLiveTranscribe = useCallback(() => {
+    transcribeLiveRef.current = false;
+    setTranscribeLive(false);
+    if (workletNodeRef.current) {
+      try { workletNodeRef.current.disconnect(); } catch { /* ignore */ }
+      workletNodeRef.current = null;
+    }
+    if (captureSourceRef.current) {
+      try { captureSourceRef.current.disconnect(); } catch { /* ignore */ }
+      captureSourceRef.current = null;
+    }
+    if (audioContextRef.current) {
+      try { void audioContextRef.current.close(); } catch { /* ignore */ }
+      audioContextRef.current = null;
+    }
+  }, []);
+
   // Pin a specific audio input device (chosen from the diagnostic dropdown)
   // and restart the recording pipeline against it. Useful when the OS default
   // is broken (asleep Bluetooth, etc.) but other inputs are available.
@@ -995,27 +1148,36 @@ export default function Session() {
     });
   }, [startListening]);
 
-  // Auto-open the mic whenever we're ready and not muted. This is what makes
-  // every session "interactive by default" — no Start button needed.
+  // Auto-open the Web Speech recognizer whenever we're ready and not muted.
+  // This is the FALLBACK path — when the live AWS Transcribe pipeline is
+  // running (transcribeLive=true), the AudioWorklet is already streaming
+  // PCM to the backend, so we skip Web Speech entirely.
   //
   // Important guards:
+  //   • !transcribeLive — don't fight the live pipeline.
   //   • !micDenied — stop retrying if the browser blocked the mic, otherwise
   //     setSessionStatus('ready') in the error handler would loop forever.
   //   • isRecording — ensure getUserMedia has actually granted the mic before
   //     we ask SpeechRecognition for it (avoids racing the permission prompt).
   useEffect(() => {
+    if (transcribeLiveRef.current) return;
     if (mutedRef.current) return;
     if (micDeniedRef.current) return;
     if (!isRecording) return;
     if (sessionStatus !== 'ready') return;
     if (recognitionRef.current && isTalkingRef.current) return;
     const t = setTimeout(() => {
-      if (!mutedRef.current && !micDeniedRef.current && sessionStatus === 'ready') {
+      if (
+        !transcribeLiveRef.current &&
+        !mutedRef.current &&
+        !micDeniedRef.current &&
+        sessionStatus === 'ready'
+      ) {
         startListening();
       }
     }, 150);
     return () => clearTimeout(t);
-  }, [sessionStatus, startListening, isRecording, micDenied]);
+  }, [sessionStatus, startListening, isRecording, micDenied, transcribeLive]);
 
   // Silence the client without opening the mic — pure "shush" control.
   // Clears the entire sentence-level TTS queue so no further audio plays
@@ -1096,6 +1258,7 @@ export default function Session() {
     try {
       // Stop speech
       stopAudio();
+      stopLiveTranscribe();
       isTalkingRef.current = false;
       recognitionRef.current?.stop();
 
@@ -1218,53 +1381,69 @@ export default function Session() {
                   <span className="text-slate-500 text-xs">v{presentation.version}</span>
                 </div>
                 <div className="text-slate-400 text-sm font-mono">
-                  Slide {currentSlide} / {presentation.slide_count}
+                  {embedUrls[presentation.id]
+                    ? <span className="text-gold-400">Animated · {presentation.slide_count} slides</span>
+                    : <>Slide {currentSlide} / {presentation.slide_count}</>}
                 </div>
               </div>
 
-              {/* Slide image */}
-              <div className="flex-1 flex items-center justify-center p-6 overflow-hidden">
-                {slideBlobUrl ? (
-                  <img
-                    src={slideBlobUrl}
-                    alt={`Slide ${currentSlide}`}
-                    className={`max-w-full max-h-full object-contain rounded-lg shadow-2xl transition-opacity ${slideLoading ? 'opacity-50' : 'opacity-100'}`}
+              {/* Slide body — Office Online iframe when embed URL is available
+                  (animations preserved); otherwise the static PNG renderer. */}
+              {embedUrls[presentation.id] ? (
+                <div className="flex-1 bg-navy-950 overflow-hidden">
+                  <iframe
+                    key={presentation.id}
+                    src={embedUrls[presentation.id]}
+                    title={presentation.title}
+                    className="w-full h-full border-0"
+                    allow="fullscreen"
                   />
-                ) : (
-                  <div className="text-slate-600 text-sm">Loading slide…</div>
-                )}
-              </div>
-
-              {/* Slide nav */}
-              <div className="px-5 py-3 border-t border-navy-700 bg-navy-900 flex items-center justify-between gap-3">
-                <button
-                  onClick={() => goToSlide(currentSlide - 1)}
-                  disabled={currentSlide <= 1}
-                  className="px-4 py-2 bg-navy-700 hover:bg-navy-600 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200 rounded-lg text-sm transition-colors"
-                >
-                  ← Prev
-                </button>
-                <div className="flex gap-1 flex-1 justify-center overflow-x-auto">
-                  {Array.from({ length: presentation.slide_count }, (_, i) => i + 1).map((n) => (
-                    <button
-                      key={n}
-                      onClick={() => goToSlide(n)}
-                      className={`w-7 h-7 rounded text-xs font-semibold flex-shrink-0 transition-colors ${
-                        n === currentSlide ? 'bg-gold-500 text-navy-900' : 'bg-navy-700 text-slate-400 hover:bg-navy-600 hover:text-slate-200'
-                      }`}
-                    >
-                      {n}
-                    </button>
-                  ))}
                 </div>
-                <button
-                  onClick={() => goToSlide(currentSlide + 1)}
-                  disabled={currentSlide >= presentation.slide_count}
-                  className="px-4 py-2 bg-navy-700 hover:bg-navy-600 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200 rounded-lg text-sm transition-colors"
-                >
-                  Next →
-                </button>
-              </div>
+              ) : (
+                <>
+                  <div className="flex-1 flex items-center justify-center p-6 overflow-hidden">
+                    {slideBlobUrl ? (
+                      <img
+                        src={slideBlobUrl}
+                        alt={`Slide ${currentSlide}`}
+                        className={`max-w-full max-h-full object-contain rounded-lg shadow-2xl transition-opacity ${slideLoading ? 'opacity-50' : 'opacity-100'}`}
+                      />
+                    ) : (
+                      <div className="text-slate-600 text-sm">Loading slide…</div>
+                    )}
+                  </div>
+                  {/* PNG-only slide nav. The iframe has its own controls. */}
+                  <div className="px-5 py-3 border-t border-navy-700 bg-navy-900 flex items-center justify-between gap-3">
+                    <button
+                      onClick={() => goToSlide(currentSlide - 1)}
+                      disabled={currentSlide <= 1}
+                      className="px-4 py-2 bg-navy-700 hover:bg-navy-600 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200 rounded-lg text-sm transition-colors"
+                    >
+                      ← Prev
+                    </button>
+                    <div className="flex gap-1 flex-1 justify-center overflow-x-auto">
+                      {Array.from({ length: presentation.slide_count }, (_, i) => i + 1).map((n) => (
+                        <button
+                          key={n}
+                          onClick={() => goToSlide(n)}
+                          className={`w-7 h-7 rounded text-xs font-semibold flex-shrink-0 transition-colors ${
+                            n === currentSlide ? 'bg-gold-500 text-navy-900' : 'bg-navy-700 text-slate-400 hover:bg-navy-600 hover:text-slate-200'
+                          }`}
+                        >
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => goToSlide(currentSlide + 1)}
+                      disabled={currentSlide >= presentation.slide_count}
+                      className="px-4 py-2 bg-navy-700 hover:bg-navy-600 disabled:opacity-30 disabled:cursor-not-allowed text-slate-200 rounded-lg text-sm transition-colors"
+                    >
+                      Next →
+                    </button>
+                  </div>
+                </>
+              )}
             </>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">

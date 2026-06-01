@@ -168,14 +168,160 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
             ),
         })
 
+        # -------------------------------------------------------------------
+        # Multiplexed audio + control loop.
+        #
+        # Two paths converge into the same Claude-streaming code:
+        #
+        #   1) Real-time: the frontend AudioWorklet sends PCM16 frames as
+        #      binary WS messages. We pipe them into AWS Transcribe Streaming.
+        #      Partial transcripts trigger barge-in; finals trigger Claude.
+        #
+        #   2) Legacy / fallback: the frontend sends {type:"advisor_message",
+        #      text:"..."} JSON (Web Speech path or text input). Same Claude
+        #      stream is invoked.
+        #
+        # While Claude is generating, any non-empty partial transcript fires
+        # an auto_interrupt to the frontend AND cancels the in-flight Claude
+        # task — server-side barge-in.
+        # -------------------------------------------------------------------
+        import asyncio as _asyncio
+        from app.services.claude_service import stream_client_response
+        from app.services.transcribe_streaming_service import (
+            LiveTranscriber,
+            is_available as _transcribe_available,
+        )
+
+        send_lock = _asyncio.Lock()
+        is_client_speaking = {"value": False}  # boxed mutable for closures
+        claude_task: dict[str, _asyncio.Task | None] = {"task": None}
+        transcriber: LiveTranscriber | None = None
+        transcript_task: _asyncio.Task | None = None
+
+        async def safe_send_json(payload: dict) -> None:
+            try:
+                async with send_lock:
+                    await websocket.send_json(payload)
+            except Exception:
+                pass
+
+        async def handle_advisor_message(text: str) -> None:
+            """Run the Claude stream for one advisor utterance and persist the
+            results. Cancellable — auto_interrupt cancels via claude_task."""
+            text = (text or "").strip()
+            if not text:
+                return
+            ts = datetime.now(timezone.utc).isoformat()
+            conversation.append({"role": "advisor", "text": text, "timestamp": ts})
+
+            start_ts = datetime.now(timezone.utc).isoformat()
+            is_client_speaking["value"] = True
+            await safe_send_json({"type": "client_response_start", "timestamp": start_ts})
+
+            async def _forward(chunk: str) -> None:
+                await safe_send_json({"type": "client_response_chunk", "text": chunk})
+
+            client_response = ""
+            try:
+                client_response = await stream_client_response(
+                    persona=persona,
+                    conversation_history=conversation[:-1],
+                    advisor_message=text,
+                    questionnaire_topics=questionnaire_topics,
+                    on_chunk=_forward,
+                )
+            except _asyncio.CancelledError:
+                # Server-side barge-in: advisor started talking again.
+                is_client_speaking["value"] = False
+                await safe_send_json({"type": "client_response_cancelled"})
+                raise
+            except Exception as e:  # noqa: BLE001
+                is_client_speaking["value"] = False
+                await safe_send_json({"type": "error", "message": f"AI error: {e}"})
+                return
+
+            client_ts = datetime.now(timezone.utc).isoformat()
+            conversation.append(
+                {"role": "client", "text": client_response, "timestamp": client_ts}
+            )
+            session.conversation = list(conversation)
+            await db.commit()
+            is_client_speaking["value"] = False
+            await safe_send_json({
+                "type": "client_response_end",
+                "text": client_response,
+                "timestamp": client_ts,
+            })
+
+        async def consume_transcripts(tx: LiveTranscriber) -> None:
+            """Read transcript events from Transcribe and route them:
+              • partial → forward to frontend (for live interim display).
+                If client is currently speaking, this also triggers barge-in.
+              • final → forward + kick off Claude (cancelling any in-flight
+                Claude task that the new utterance is interrupting).
+            """
+            async for ev in tx.events():
+                if ev.is_partial:
+                    await safe_send_json({"type": "transcript_partial", "text": ev.text})
+                    # Barge-in: the advisor started speaking during the client's reply.
+                    if is_client_speaking["value"]:
+                        cur = claude_task["task"]
+                        if cur and not cur.done():
+                            cur.cancel()
+                        await safe_send_json({"type": "auto_interrupt"})
+                        is_client_speaking["value"] = False
+                else:
+                    await safe_send_json({"type": "transcript_final", "text": ev.text})
+                    # Cancel any still-running Claude stream just to be safe,
+                    # then kick off a new one with this utterance.
+                    cur = claude_task["task"]
+                    if cur and not cur.done():
+                        cur.cancel()
+                        try:
+                            await cur
+                        except (_asyncio.CancelledError, Exception):
+                            pass
+                    claude_task["task"] = _asyncio.create_task(handle_advisor_message(ev.text))
+
         try:
             while True:
-                raw = await websocket.receive_text()
+                evt = await websocket.receive()
+                # FastAPI's WS receive() returns a dict with one of:
+                #   {"type": "websocket.receive", "text": "..."}      (JSON control)
+                #   {"type": "websocket.receive", "bytes": b"..."}    (PCM audio frame)
+                #   {"type": "websocket.disconnect", ...}
+                if evt.get("type") == "websocket.disconnect":
+                    raise WebSocketDisconnect()
+
+                # ---- AUDIO FRAME PATH ----
+                audio_bytes = evt.get("bytes")
+                if audio_bytes:
+                    # Lazy-init the transcriber on the first audio frame so a
+                    # text-only session never pays the Transcribe cost.
+                    if transcriber is None and _transcribe_available():
+                        try:
+                            transcriber = LiveTranscriber(language_code="en-US")
+                            await transcriber.__aenter__()
+                            transcript_task = _asyncio.create_task(consume_transcripts(transcriber))
+                        except Exception as e:  # noqa: BLE001
+                            transcriber = None
+                            await safe_send_json({
+                                "type": "transcribe_unavailable",
+                                "message": f"Live transcription unavailable: {e}",
+                            })
+                    if transcriber is not None:
+                        await transcriber.send_audio(audio_bytes)
+                    continue
+
+                # ---- TEXT (control) PATH ----
+                raw = evt.get("text")
+                if not raw:
+                    continue
                 try:
                     data = json.loads(raw)
                     msg = WSMessage(**data)
                 except Exception:
-                    await websocket.send_json({"type": "error", "message": "Invalid message format"})
+                    await safe_send_json({"type": "error", "message": "Invalid message format"})
                     continue
 
                 if msg.type == "end_session":
@@ -184,19 +330,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                     session.conversation = conversation
                     session.slide_events = slide_events
                     await db.commit()
-                    await websocket.send_json({"type": "session_ended"})
+                    await safe_send_json({"type": "session_ended"})
                     break
 
                 if msg.type == "advisor_slide_change":
                     slide_num = data.get("slide_number")
                     if not isinstance(slide_num, int) or slide_num < 1:
-                        await websocket.send_json({"type": "error", "message": "Invalid slide_number"})
+                        await safe_send_json({"type": "error", "message": "Invalid slide_number"})
                         continue
                     event = {
                         "slide_number": slide_num,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
-                    # Optional: which deck this slide belongs to (third appts have 2 decks)
                     pres_id = data.get("presentation_id")
                     if isinstance(pres_id, str) and pres_id:
                         event["presentation_id"] = pres_id
@@ -206,65 +351,32 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                     slide_events.append(event)
                     session.slide_events = list(slide_events)
                     await db.commit()
-                    # Echo for client confirmation
-                    await websocket.send_json({"type": "slide_changed", "slide_number": slide_num})
+                    await safe_send_json({"type": "slide_changed", "slide_number": slide_num})
                     continue
 
                 if msg.type == "advisor_message":
+                    # Legacy / Web Speech / text-input path. Same Claude code.
                     if not msg.text or not msg.text.strip():
-                        await websocket.send_json({"type": "error", "message": "Empty message"})
+                        await safe_send_json({"type": "error", "message": "Empty message"})
                         continue
+                    cur = claude_task["task"]
+                    if cur and not cur.done():
+                        cur.cancel()
+                        try:
+                            await cur
+                        except (_asyncio.CancelledError, Exception):
+                            pass
+                    claude_task["task"] = _asyncio.create_task(handle_advisor_message(msg.text))
+                    continue
 
-                    # Store advisor message
-                    ts = datetime.now(timezone.utc).isoformat()
-                    conversation.append({"role": "advisor", "text": msg.text, "timestamp": ts})
-
-                    # Tell the frontend a streamed reply is starting so it can
-                    # spin up a live message bubble + TTS sentence queue.
-                    start_ts = datetime.now(timezone.utc).isoformat()
-                    await websocket.send_json({
-                        "type": "client_response_start",
-                        "timestamp": start_ts,
-                    })
-
-                    # Stream the response. Each text chunk is forwarded to the
-                    # WS as it arrives.
-                    from app.services.claude_service import stream_client_response
-
-                    async def _forward(chunk: str) -> None:
-                        await websocket.send_json({
-                            "type": "client_response_chunk",
-                            "text": chunk,
-                        })
-
-                    try:
-                        client_response = await stream_client_response(
-                            persona=persona,
-                            conversation_history=conversation[:-1],
-                            advisor_message=msg.text,
-                            questionnaire_topics=questionnaire_topics,
-                            on_chunk=_forward,
-                        )
-                    except Exception as e:
-                        await websocket.send_json(
-                            {"type": "error", "message": f"AI error: {str(e)}"}
-                        )
-                        continue
-
-                    # Persist the finalized client message.
-                    client_ts = datetime.now(timezone.utc).isoformat()
-                    conversation.append(
-                        {"role": "client", "text": client_response, "timestamp": client_ts}
-                    )
-                    session.conversation = list(conversation)
-                    await db.commit()
-
-                    # End-of-stream marker (frontend reconciles full text).
-                    await websocket.send_json({
-                        "type": "client_response_end",
-                        "text": client_response,
-                        "timestamp": client_ts,
-                    })
+                if msg.type == "advisor_interrupt":
+                    # Client UI requested an immediate barge-in.
+                    cur = claude_task["task"]
+                    if cur and not cur.done():
+                        cur.cancel()
+                    is_client_speaking["value"] = False
+                    await safe_send_json({"type": "auto_interrupt"})
+                    continue
 
         except WebSocketDisconnect:
             # Mark session as completed on disconnect if still active
@@ -274,6 +386,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                 session.conversation = conversation
                 session.slide_events = slide_events
                 await db.commit()
+        finally:
+            # Clean up live tasks so they don't leak.
+            cur = claude_task["task"]
+            if cur and not cur.done():
+                cur.cancel()
+            if transcript_task and not transcript_task.done():
+                transcript_task.cancel()
+            if transcriber is not None:
+                try:
+                    await transcriber.close()
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------

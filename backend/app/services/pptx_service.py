@@ -244,3 +244,117 @@ def delete_script_pdf(presentation_id: str) -> None:
     p = script_pdf_path(presentation_id)
     if p.exists():
         p.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# S3 staging for PowerPoint Online iframe embed
+#
+# Microsoft's public Office Online viewer (view.officeapps.live.com) needs to
+# fetch the .pptx file from a publicly-reachable HTTPS URL. We stage the deck
+# in our analysis bucket and hand back a short-lived presigned URL — Microsoft
+# can fetch it within the TTL, our app stays authenticated everywhere else.
+# ---------------------------------------------------------------------------
+
+_OFFICE_VIEWER_BASE = "https://view.officeapps.live.com/op/embed.aspx"
+_EMBED_PREFIX = "pptx-embed"
+
+
+def _embed_bucket() -> str | None:
+    """Bucket used for PPTX staging. Reuses ANALYSIS_S3_BUCKET (already set
+    in local + prod). Returns None when no bucket is configured, so the
+    embed path stays optional."""
+    from app.config import settings
+    return settings.ANALYSIS_S3_BUCKET or None
+
+
+def _embed_key(presentation_id: str, filename: str | None) -> str:
+    safe = (Path(filename or "deck.pptx").name) if filename else "deck.pptx"
+    return f"{_EMBED_PREFIX}/{presentation_id}/{safe}"
+
+
+def _s3_client_for_embed():
+    """Boto3 client. Localized import to avoid loading boto3 when unused."""
+    import boto3
+    from app.config import settings
+    kwargs = {}
+    if settings.AWS_REGION:
+        kwargs["region_name"] = settings.AWS_REGION
+    return boto3.client("s3", **kwargs)
+
+
+def _pick_local_pptx(presentation_id: str) -> Path | None:
+    """Find the first .pptx file in the presentation's local dir."""
+    pres_dir = presentation_dir(presentation_id)
+    if not pres_dir.exists():
+        return None
+    pptx_files = sorted(pres_dir.glob("*.pptx"))
+    return pptx_files[0] if pptx_files else None
+
+
+def ensure_pptx_in_s3(presentation_id: str) -> tuple[str, str] | None:
+    """Idempotently push the local .pptx for `presentation_id` to S3.
+    Returns (bucket, key) on success, or None if the bucket isn't configured
+    or no local file exists. Re-uploads if the object is missing (the
+    analysis bucket has a 30-day lifecycle that can prune it)."""
+    bucket = _embed_bucket()
+    if not bucket:
+        return None
+    local = _pick_local_pptx(presentation_id)
+    if local is None:
+        return None
+    key = _embed_key(presentation_id, local.name)
+    client = _s3_client_for_embed()
+
+    # head_object: skip the upload if the file is already there.
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+        return bucket, key
+    except Exception:
+        pass  # not found / unreadable — upload below
+
+    try:
+        client.upload_file(
+            str(local),
+            bucket,
+            key,
+            ExtraArgs={
+                "ContentType": (
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                ),
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger("trajan.pptx").warning(
+            "Failed to upload PPTX to S3 for embed: %s", e
+        )
+        return None
+    return bucket, key
+
+
+def get_pptx_embed_url(presentation_id: str, ttl_seconds: int = 3600) -> str | None:
+    """Build the Microsoft Office Online viewer URL for this deck.
+
+    Returns a fully-formed iframe `src` URL of the form:
+        https://view.officeapps.live.com/op/embed.aspx?src=<URL-encoded PPTX URL>
+
+    Returns None when staging fails (no bucket / no local file) so the caller
+    falls back to the static PNG path."""
+    from urllib.parse import quote
+
+    staged = ensure_pptx_in_s3(presentation_id)
+    if staged is None:
+        return None
+    bucket, key = staged
+    client = _s3_client_for_embed()
+    try:
+        presigned = client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=max(60, ttl_seconds),
+        )
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger("trajan.pptx").warning("Presigned URL failed: %s", e)
+        return None
+    return f"{_OFFICE_VIEWER_BASE}?src={quote(presigned, safe='')}"

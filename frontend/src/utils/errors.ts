@@ -55,7 +55,7 @@ export function getErrorMessage(err: unknown, fallback = 'Something went wrong')
 
   // 2. Network error — request was made but no response received
   if (ax.request) {
-    if (ax.code === 'ERR_NETWORK') return 'Network error — backend is unreachable. Is it running on port 8000?';
+    if (ax.code === 'ERR_NETWORK') return 'Network error — backend is unreachable. Is it running on port 8081?';
     if (ax.code === 'ECONNABORTED') return 'Request timed out';
     return `Network error: ${ax.message || ax.code || 'no response from server'}`;
   }
