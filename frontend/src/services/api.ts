@@ -336,18 +336,35 @@ export interface VisemeMark {
   end?: number;
 }
 
+/** Persona age bucket — drives voice + prosody on the TTS side. */
+export type TTSAgeGroup = 'young_adult' | 'middle_aged' | 'senior' | 'elderly';
+
 export const ttsApi = {
-  /** Synthesize text to mp3 bytes. Returns an object URL that <audio src> can use. */
-  synthesize: async (text: string, gender?: 'male' | 'female' | null): Promise<string> => {
-    const response = await api.post('/tts', { text, gender }, { responseType: 'blob' });
+  /** Synthesize text to mp3 bytes. Returns an object URL that <audio src> can use.
+   *  `ageGroup` shifts the voice (Ruth/Joey for young, Joanna/Matthew for middle-aged,
+   *   Kendra/Stephen with slowed prosody for senior/elderly). */
+  synthesize: async (
+    text: string,
+    gender?: 'male' | 'female' | null,
+    ageGroup?: TTSAgeGroup | null,
+  ): Promise<string> => {
+    const response = await api.post(
+      '/tts',
+      { text, gender, age_group: ageGroup },
+      { responseType: 'blob' },
+    );
     const blob = response.data as Blob;
     return URL.createObjectURL(blob);
   },
   /** Polly viseme + word speech marks for the same text, used to drive the
    *  client avatar's lip overlay. Each mark has `time` in ms. */
-  marks: async (text: string, gender?: 'male' | 'female' | null): Promise<VisemeMark[]> => {
+  marks: async (
+    text: string,
+    gender?: 'male' | 'female' | null,
+    ageGroup?: TTSAgeGroup | null,
+  ): Promise<VisemeMark[]> => {
     try {
-      const response = await api.post('/tts/marks', { text, gender });
+      const response = await api.post('/tts/marks', { text, gender, age_group: ageGroup });
       return (response.data?.marks ?? []) as VisemeMark[];
     } catch {
       return [];

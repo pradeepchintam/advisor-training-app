@@ -42,6 +42,28 @@ def _randomize_persona_names(persona, *, seed: str | None) -> None:
         )
 
 
+def _ensure_persona_has_gender(persona, *, seed: str | None = None) -> None:
+    """Defensive guard: every persona MUST have a gender so the TTS picker can
+    select a voice. If the stored profile is missing one (legacy data, partial
+    builders), assign a random one — seeded when possible so repeat starts of
+    the same assignment land on the same gender."""
+    import random as _random
+    g = (getattr(persona, "gender", None) or "").strip().lower()
+    if g in {"male", "female"}:
+        # Normalize casing so downstream comparisons are simple.
+        persona.gender = g
+        return
+    rng = _random.Random(seed) if seed else _random
+    persona.gender = rng.choice(["male", "female"])
+    # Spouse gender mirrors the same defensive guard for couples.
+    if getattr(persona, "client_type", "") == "couple":
+        sg = (getattr(persona, "spouse_gender", None) or "").strip().lower()
+        if sg in {"male", "female"}:
+            persona.spouse_gender = sg
+        else:
+            persona.spouse_gender = rng.choice(["male", "female"])
+
+
 async def _fetch_client_image(gender: str) -> str:
     """Fetch a profile image URL from randomuser.me."""
     gender_param = "male" if gender.lower() == "male" else "female"
@@ -358,11 +380,20 @@ async def create_session(
         assignment_id = assignment.id
         appointment_type = profile.appointment_type
 
-        # Capture the curriculum's canonical name BEFORE we randomize, so the
-        # same client keeps the same randomized name across this advisor's
-        # 1st/2nd/3rd appointments with them.
-        original_name = persona.name
-        _randomize_persona_names(persona, seed=f"{current_user.id}:{original_name}")
+        # Assigned sessions PRESERVE the profile's persona exactly — same name
+        # the admin sees in the assignment table, same name the advisor sees
+        # when the session starts. The earlier randomization was disorienting
+        # ("Margaret Chen" in the table, "Linda Garcia" in the meeting).
+
+        # Guard: the profile MUST have a gender so the TTS voice picker can
+        # work. If somehow it's missing, fill in a deterministic one keyed on
+        # the profile so repeat starts stay consistent. Persist the inferred
+        # gender back to the profile so the assignment table and the session
+        # screen agree from this point onward.
+        original_gender = (getattr(persona, "gender", None) or "").strip().lower()
+        _ensure_persona_has_gender(persona, seed=f"profile:{profile.id}")
+        if persona.gender != original_gender:
+            profile.persona = persona.model_dump()
 
         # Persona may be partial (created from picker without name/backstory)
         if not persona.name or not persona.backstory:
@@ -381,6 +412,10 @@ async def create_session(
             )
         persona = payload.persona
         appointment_type = None  # untyped → falls back to first-appointment deck
+        # Ensure gender is set BEFORE name randomization so the right gendered
+        # name pool is used. PersonaBuilder may not have populated it for
+        # quick-start flows.
+        _ensure_persona_has_gender(persona)
         # Self-initiated sessions get a freshly randomized name every time —
         # the advisor shouldn't see the same name twice in a row.
         _randomize_persona_names(persona, seed=None)

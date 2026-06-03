@@ -427,7 +427,13 @@ export default function Session() {
       stopAudio();
       try {
         setSessionStatus('client_speaking');
-        const url = await ttsApi.synthesize(text, session?.persona?.gender as ('male' | 'female' | undefined));
+        const url = await ttsApi.synthesize(
+          text,
+          session?.persona?.gender as ('male' | 'female' | undefined),
+          session?.persona?.age_group as (
+            'young_adult' | 'middle_aged' | 'senior' | 'elderly' | undefined
+          ),
+        );
         const audio = new Audio(url);
         audioRef.current = audio;
         audio.onended = () => {
@@ -445,7 +451,7 @@ export default function Session() {
         setSessionStatus('ready');
       }
     },
-    [session?.persona?.gender, stopAudio, toast]
+    [session?.persona?.gender, session?.persona?.age_group, stopAudio, toast]
   );
 
   // ---- Sentence-level streaming TTS --------------------------------------
@@ -462,13 +468,16 @@ export default function Session() {
     ttsPlayingRef.current = true;
     let blobUrl: string | null = null;
     const gender = session?.persona?.gender as ('male' | 'female' | undefined);
+    const ageGroup = session?.persona?.age_group as (
+      'young_adult' | 'middle_aged' | 'senior' | 'elderly' | undefined
+    );
     try {
       setSessionStatus('client_speaking');
       // Fetch audio + visemes in parallel — viseme timing drives the mouth
       // overlay; if the marks call fails, we just degrade to a static mouth.
       const [url, marks] = await Promise.all([
-        ttsApi.synthesize(next, gender),
-        ttsApi.marks(next, gender),
+        ttsApi.synthesize(next, gender, ageGroup),
+        ttsApi.marks(next, gender, ageGroup),
       ]);
       blobUrl = url;
       currentVisemesRef.current = (marks || []).filter((m) => m.type === 'viseme');
@@ -520,7 +529,7 @@ export default function Session() {
         setSessionStatus('ready');
       }
     }
-  }, [session?.persona?.gender]);
+  }, [session?.persona?.gender, session?.persona?.age_group]);
 
   const enqueueSentences = useCallback((sentences: string[]) => {
     if (sentences.length === 0) return;

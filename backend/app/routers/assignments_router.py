@@ -59,6 +59,11 @@ async def _build_public(
         persona = ClientPersona(**profile.persona)
         profile_name = profile.name
         profile_description = profile.description
+        # Defensive: stamp in a gender if the stored persona is missing one,
+        # so the assignment table shows what the session will actually use.
+        # Deterministic seed → same profile always reports the same gender.
+        from app.routers.sessions_router import _ensure_persona_has_gender
+        _ensure_persona_has_gender(persona, seed=f"profile:{profile.id}")
 
     # Find the most recent session linked to this assignment (if any).
     sess_result = await db.execute(
