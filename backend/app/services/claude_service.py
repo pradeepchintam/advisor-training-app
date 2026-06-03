@@ -90,6 +90,12 @@ BEHAVIOR GUIDELINES — read these carefully:
 - If the advisor jumps straight to numbers without rapport, react naturally to that (slightly thrown off, redirect, etc.) — don't reward bad behavior by immediately complying.
 - You may glance at the slides they show and react ("That's a useful framework", "Can you explain that point again?") but you don't see the slides directly — judge from what they describe.
 
+OUTPUT FORMAT — CRITICAL:
+- Output ONLY what the client SAYS OUT LOUD. Plain spoken words.
+- NEVER write stage directions, narration, emotes, or action descriptions of ANY kind. Do not use asterisks (*pauses briefly*), underscores (_smiles_), brackets ([sighs]), parentheses with non-speech ((nervously)), or any "tone:" / "action:" prefixes.
+- No "I would say..." framing. Just say it directly.
+- If you want to convey hesitation, write the spoken hesitation itself ("Well... um, yeah, I've thought about that") — never narrate it (NOT "*hesitates*").
+
 TOPICS THE ADVISOR IS EXPECTED TO COVER OVER THE FULL CONVERSATION (this is for context — don't bring them up yourself):
 {topics_formatted}
 
@@ -152,10 +158,120 @@ BEHAVIOR GUIDELINES — read these carefully:
 - If the advisor jumps straight to numbers without rapport, react naturally to that (slightly thrown off, redirect, etc.) — don't reward bad behavior by immediately complying.
 - You may glance at the slides they show and react ("That's a useful framework", "Can you explain that point again?") but you don't see the slides directly — judge from what they describe.
 
+OUTPUT FORMAT — CRITICAL:
+- Output ONLY what the client SAYS OUT LOUD. Plain spoken words.
+- NEVER write stage directions, narration, emotes, or action descriptions of ANY kind. Do not use asterisks (*pauses briefly*), underscores (_smiles_), brackets ([sighs]), parentheses with non-speech ((nervously)), or any "tone:" / "action:" prefixes.
+- No "I would say..." framing. Just say it directly.
+- If you want to convey hesitation, write the spoken hesitation itself ("Well... um, yeah, I've thought about that") — never narrate it (NOT "*hesitates*").
+
 TOPICS THE ADVISOR IS EXPECTED TO COVER OVER THE FULL CONVERSATION (this is for context — don't bring them up yourself):
 {topics_formatted}
 
 Current progress: This is exchange #{covered_count + 1}. Early exchanges should be light/relational; financial depth comes later as the advisor earns it."""
+
+
+class _StageDirectionStripper:
+    """Streaming filter that drops stage-direction segments from the model's
+    output before they reach the frontend (transcript + TTS).
+
+    Drops any text wrapped in *...*, _..._, [...], or ((...)) — even when the
+    opening and closing delimiter arrive in different stream chunks. Whatever
+    can be definitively classified as 'inside' or 'outside' is flushed; bytes
+    that could go either way (e.g., a lone trailing `*`) are buffered until
+    the next chunk resolves them. The final `flush()` releases any remaining
+    buffered text as plain speech (defensive — if the model never closed the
+    direction, we'd rather speak it than swallow real content silently).
+    """
+
+    # Each entry: (opening char, closing char). Brackets and parens use single
+    # chars; asterisks/underscores use the same char to open and close.
+    _PAIRS = {"*": "*", "_": "_", "[": "]", "(": ")"}
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        # When inside a direction, this is the closer we're waiting for.
+        self._waiting_close: str | None = None
+        # Tracks "((" double-paren openings so we don't strip ordinary parens
+        # (which legitimately appear in speech like "I (Pradeep) think...").
+        self._double_paren = False
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+        out: list[str] = []
+        s = self._buffer + text
+        self._buffer = ""
+        i = 0
+        n = len(s)
+        while i < n:
+            ch = s[i]
+            if self._waiting_close is not None:
+                # Inside a direction — discard characters until the closer.
+                close = self._waiting_close
+                if self._double_paren:
+                    # Look for "))" specifically.
+                    if ch == ")" and i + 1 < n and s[i + 1] == ")":
+                        i += 2
+                        self._waiting_close = None
+                        self._double_paren = False
+                        continue
+                    if ch == ")" and i + 1 >= n:
+                        # Can't tell if next char is ')' — buffer and wait.
+                        self._buffer = s[i:]
+                        return "".join(out)
+                    i += 1
+                    continue
+                if ch == close:
+                    i += 1
+                    self._waiting_close = None
+                    continue
+                i += 1
+                continue
+
+            # Outside a direction — check for an opener.
+            if ch == "*" or ch == "_":
+                # Need next char to decide bold/italic block vs end of stream.
+                # If end-of-stream, buffer the lone delimiter.
+                if i + 1 >= n:
+                    self._buffer = s[i:]
+                    return "".join(out)
+                self._waiting_close = self._PAIRS[ch]
+                i += 1
+                continue
+            if ch == "[":
+                self._waiting_close = "]"
+                i += 1
+                continue
+            if ch == "(":
+                # Only treat as direction when DOUBLED — ordinary single parens
+                # are legitimate speech.
+                if i + 1 >= n:
+                    self._buffer = s[i:]
+                    return "".join(out)
+                if s[i + 1] == "(":
+                    self._waiting_close = ")"
+                    self._double_paren = True
+                    i += 2
+                    continue
+                # Single paren — pass through.
+                out.append(ch)
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Release any remaining buffered text. Called at end of stream."""
+        if self._waiting_close is not None:
+            # Unclosed direction — discard everything left.
+            self._buffer = ""
+            self._waiting_close = None
+            self._double_paren = False
+            return ""
+        leftover = self._buffer
+        self._buffer = ""
+        return leftover
 
 
 async def stream_client_response(
@@ -165,15 +281,17 @@ async def stream_client_response(
     questionnaire_topics: list[dict],
     on_chunk: Callable[[str], Awaitable[None]],
 ) -> str:
-    """Stream the simulated client's reply token-by-token.
+    """Stream the simulated client's reply token-by-token, with stage
+    directions filtered out before they reach the frontend.
 
     `on_chunk(text)` is awaited for each incremental text fragment. Returns
-    the full concatenated text so the caller can persist it.
+    the full concatenated (filtered) text so the caller can persist it.
     """
     topics_formatted = _format_topics(questionnaire_topics)
     system_prompt = _build_simulate_system_prompt(persona, conversation_history, topics_formatted)
     messages = _build_conversation_messages(conversation_history, advisor_message)
 
+    stripper = _StageDirectionStripper()
     full: list[str] = []
     async with _async_client.messages.stream(
         model="claude-haiku-4-5-20251001",
@@ -190,8 +308,14 @@ async def stream_client_response(
         async for text in stream.text_stream:
             if not text:
                 continue
-            full.append(text)
-            await on_chunk(text)
+            cleaned = stripper.feed(text)
+            if cleaned:
+                full.append(cleaned)
+                await on_chunk(cleaned)
+        trailing = stripper.flush()
+        if trailing:
+            full.append(trailing)
+            await on_chunk(trailing)
     return "".join(full)
 
 
