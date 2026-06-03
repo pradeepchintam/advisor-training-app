@@ -17,11 +17,12 @@ function formatDuration(start: string, end: string | null) {
   return `${mins}m`;
 }
 
-function ScoreBadge({ score }: { score: number | null | undefined }) {
+function ScoreBadge({ score, max = 10 }: { score: number | null | undefined; max?: number }) {
   if (score == null) return <span className="text-slate-500 text-sm">—</span>;
+  const pct = score / max;
   const cls =
-    score >= 8 ? 'bg-green-900 text-green-300' : score >= 5 ? 'bg-yellow-900 text-yellow-300' : 'bg-red-900 text-red-300';
-  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${cls}`}>{score.toFixed(1)}</span>;
+    pct >= 0.8 ? 'bg-green-900 text-green-300' : pct >= 0.5 ? 'bg-yellow-900 text-yellow-300' : 'bg-red-900 text-red-300';
+  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${cls}`}>{score.toFixed(1)}/{max}</span>;
 }
 
 export default function AdminSessionReview() {
@@ -335,7 +336,7 @@ function SessionRow({
         </div>
 
         <div className="flex items-center gap-3 flex-shrink-0">
-          <ScoreBadge score={session.overall_score} />
+          <ScoreBadge score={session.overall_score} max={session.score_scale ?? 10} />
           <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
             session.status === 'completed' ? 'bg-green-900/50 text-green-400' : session.status === 'active' ? 'bg-blue-900/50 text-blue-400' : 'bg-red-900/50 text-red-400'
           }`}>{session.status}</span>

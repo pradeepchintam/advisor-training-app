@@ -9,11 +9,12 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function ScoreBadge({ score }: { score: number | null | undefined }) {
+function ScoreBadge({ score, max = 10 }: { score: number | null | undefined; max?: number }) {
   if (score == null) return <span className="text-slate-500 text-sm">—</span>;
+  const pct = score / max;
   const cls =
-    score >= 8 ? 'bg-green-900 text-green-300' : score >= 5 ? 'bg-yellow-900 text-yellow-300' : 'bg-red-900 text-red-300';
-  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${cls}`}>{score.toFixed(1)}</span>;
+    pct >= 0.8 ? 'bg-green-900 text-green-300' : pct >= 0.5 ? 'bg-yellow-900 text-yellow-300' : 'bg-red-900 text-red-300';
+  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${cls}`}>{score.toFixed(1)}/{max}</span>;
 }
 
 function StatCard({ label, value, sub, accent }: { label: string; value: string | number; sub?: string; accent?: boolean }) {
@@ -43,9 +44,14 @@ export default function AdminDashboard() {
   const activeAdvisors = advisors.filter((a) => a.is_active).length;
   const completedSessions = sessions.filter((s) => s.status === 'completed');
   const scoredSessions = completedSessions.filter((s) => s.overall_score != null);
+  // Normalize to a common 0–10 scale so mixed scorecard (1–5) and legacy
+  // (1–10) sessions average fairly.
   const avgScore =
     scoredSessions.length > 0
-      ? scoredSessions.reduce((sum, s) => sum + (s.overall_score ?? 0), 0) / scoredSessions.length
+      ? scoredSessions.reduce(
+          (sum, s) => sum + (s.overall_score ?? 0) * (10 / (s.score_scale ?? 10)),
+          0,
+        ) / scoredSessions.length
       : null;
 
   const recentSessions = [...sessions]
@@ -234,7 +240,7 @@ export default function AdminDashboard() {
                 <td className="px-6 py-3 text-slate-400 text-sm">{formatDate(s.started_at)}</td>
                 <td className="px-4 py-3 text-white text-sm font-medium">{s.client_name}</td>
                 <td className="px-4 py-3 text-slate-400 text-sm">{s.advisor_name ?? '—'}</td>
-                <td className="px-4 py-3"><ScoreBadge score={s.overall_score} /></td>
+                <td className="px-4 py-3"><ScoreBadge score={s.overall_score} max={s.score_scale ?? 10} /></td>
                 <td className="px-4 py-3">
                   <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
                     s.status === 'completed' ? 'bg-green-900/50 text-green-400' : s.status === 'active' ? 'bg-blue-900/50 text-blue-400' : 'bg-red-900/50 text-red-400'

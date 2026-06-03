@@ -13,10 +13,12 @@ interface AddAdvisorForm {
 }
 
 function ScoreBadge({ score }: { score: number | null | undefined }) {
+  // avg_score from the backend is already normalized to a 0–10 scale so a
+  // history mixing 1–5 (new scorecard) and 1–10 (legacy) doesn't skew it.
   if (score == null) return <span className="text-slate-500 text-sm">—</span>;
   const cls =
     score >= 8 ? 'bg-green-900 text-green-300' : score >= 5 ? 'bg-yellow-900 text-yellow-300' : 'bg-red-900 text-red-300';
-  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${cls}`}>{score.toFixed(1)}</span>;
+  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${cls}`}>{score.toFixed(1)}/10</span>;
 }
 
 function formatDate(iso: string) {

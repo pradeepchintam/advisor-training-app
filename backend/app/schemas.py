@@ -162,6 +162,9 @@ class SessionPublic(BaseModel):
     ended_at: Optional[datetime]
     persona: ClientPersona
     overall_score: Optional[float] = None
+    # Scale of overall_score: 5 for new scorecard-shape analyses, 10 for legacy
+    # 7-category analyses. Lets the UI color/scale the score correctly.
+    score_scale: int = 10
     source: str = "self_initiated"
     assignment_id: Optional[str] = None
     profile_name: Optional[str] = None  # populated when source == "assigned"
@@ -281,18 +284,45 @@ class ScriptPublic(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AnalysisScore(BaseModel):
-    score: float  # 1-10
+    score: float  # 1-10  (legacy shape — kept for backward-compat with old sessions)
     feedback: str
 
 
+class ScorecardItemResult(BaseModel):
+    """One item on a Trajan Wealth scorecard, scored 1–5 (matches the
+    printed scorecards). `applicable=False` means the item was N/A for
+    this session (e.g., Income Rider on a protected-growth-only annuity)."""
+    key: str
+    label: str
+    kind: str  # "script" | "behavioral"
+    applicable: bool = True
+    score: Optional[float] = None  # 1–5 when applicable
+    feedback: str
+
+
+class ScorecardResult(BaseModel):
+    """A complete scorecard for one appointment type. 3rd appointments
+    return two — one for Annuity, one for Alternatives."""
+    type: str  # "first_meeting" | "aum" | "annuity" | "alternatives"
+    title: str
+    items: list[ScorecardItemResult]
+    summary_score: Optional[float] = None  # mean of applicable item scores
+
+
 class SessionAnalysis(BaseModel):
-    overall_score: float
-    categories: dict[str, AnalysisScore]
+    overall_score: float  # 1–5 in the new shape, 1–10 in legacy sessions
+    # NEW shape — one or two scorecards per session, replacing the old
+    # 7-category dict. Legacy sessions don't have this field.
+    scorecards: Optional[list[ScorecardResult]] = None
+    # LEGACY — kept Optional so old sessions still deserialize.
+    categories: Optional[dict[str, AnalysisScore]] = None
     strengths: list[str]
     areas_for_improvement: list[str]
     compliance_flags: list[str]
     transcript_summary: str
     recommendations: list[str]
+    # Legacy standalone fields — new analyzer puts these inside the scorecard
+    # items, but old sessions keep them at the top level.
     script_adherence: Optional[AnalysisScore] = None
     slide_walkthrough: Optional[AnalysisScore] = None
 

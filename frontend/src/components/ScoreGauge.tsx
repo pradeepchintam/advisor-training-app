@@ -1,20 +1,24 @@
 import React from 'react';
 
 interface ScoreGaugeProps {
-  score: number; // 1-10
+  score: number;
+  /** Maximum value of the underlying scale. Defaults to 10 for legacy
+   *  sessions; pass 5 for the new scorecard shape. */
+  max?: number;
   size?: number;
   strokeWidth?: number;
   showLabel?: boolean;
 }
 
-function getColor(score: number): string {
-  if (score >= 8) return '#22c55e'; // green
-  if (score >= 5) return '#f59e0b'; // amber/gold
+function getColor(pct: number): string {
+  if (pct >= 0.8) return '#22c55e'; // green
+  if (pct >= 0.5) return '#f59e0b'; // amber/gold
   return '#ef4444'; // red
 }
 
 export default function ScoreGauge({
   score,
+  max = 10,
   size = 120,
   strokeWidth = 10,
   showLabel = true,
@@ -23,9 +27,10 @@ export default function ScoreGauge({
   const circumference = 2 * Math.PI * radius;
   // We use 270° arc (from 135° to 405°, starting bottom-left to bottom-right)
   const arcLength = circumference * 0.75;
-  const offset = arcLength - (score / 10) * arcLength;
+  const pct = Math.max(0, Math.min(1, score / max));
+  const offset = arcLength - pct * arcLength;
 
-  const color = getColor(score);
+  const color = getColor(pct);
   const cx = size / 2;
   const cy = size / 2;
 
@@ -62,7 +67,7 @@ export default function ScoreGauge({
             {score.toFixed(1)}
           </span>
           <span className="text-slate-500 leading-none" style={{ fontSize: size * 0.1 }}>
-            / 10
+            / {max}
           </span>
         </div>
       )}

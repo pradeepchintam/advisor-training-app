@@ -18,11 +18,12 @@ function formatDuration(start: string, end: string | null) {
   return `${mins}m`;
 }
 
-function ScoreBadge({ score }: { score: number | null | undefined }) {
+function ScoreBadge({ score, max = 10 }: { score: number | null | undefined; max?: number }) {
   if (score == null) return <span className="text-slate-500 text-sm">—</span>;
+  const pct = score / max;
   const cls =
-    score >= 8 ? 'bg-green-900 text-green-300' : score >= 5 ? 'bg-yellow-900 text-yellow-300' : 'bg-red-900 text-red-300';
-  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${cls}`}>{score.toFixed(1)}</span>;
+    pct >= 0.8 ? 'bg-green-900 text-green-300' : pct >= 0.5 ? 'bg-yellow-900 text-yellow-300' : 'bg-red-900 text-red-300';
+  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${cls}`}>{score.toFixed(1)}/{max}</span>;
 }
 
 export default function SessionHistory() {
@@ -53,8 +54,12 @@ export default function SessionHistory() {
     if (statusFilter !== 'all' && s.status !== statusFilter) return false;
     if (dateFrom && new Date(s.started_at) < new Date(dateFrom)) return false;
     if (dateTo && new Date(s.started_at) > new Date(dateTo + 'T23:59:59')) return false;
-    if (minScore && (s.overall_score ?? -1) < parseFloat(minScore)) return false;
-    if (maxScore && (s.overall_score ?? 11) > parseFloat(maxScore)) return false;
+    // Filter on a normalized 0–10 score so the min/max inputs behave the
+    // same way regardless of whether a session was scored 1–5 or 1–10.
+    const normalized =
+      s.overall_score != null ? s.overall_score * (10 / (s.score_scale ?? 10)) : null;
+    if (minScore && (normalized ?? -1) < parseFloat(minScore)) return false;
+    if (maxScore && (normalized ?? 11) > parseFloat(maxScore)) return false;
     if (advisorFilter && s.advisor_name !== advisorFilter) return false;
     return true;
   });
@@ -225,7 +230,7 @@ export default function SessionHistory() {
                     {formatDuration(session.started_at, session.ended_at)}
                   </td>
                   <td className="px-4 py-3">
-                    <ScoreBadge score={session.overall_score} />
+                    <ScoreBadge score={session.overall_score} max={session.score_scale ?? 10} />
                   </td>
                   <td className="px-4 py-3">
                     <span

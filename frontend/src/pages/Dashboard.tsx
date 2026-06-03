@@ -7,15 +7,16 @@ import PersonaBadge from '../components/PersonaBadge';
 import { useToast } from '../components/Toast';
 import { getErrorMessage } from '../utils/errors';
 
-function ScoreBadge({ score }: { score: number | null | undefined }) {
+function ScoreBadge({ score, max = 10 }: { score: number | null | undefined; max?: number }) {
   if (score == null) return <span className="text-slate-500 text-sm">—</span>;
+  const pct = score / max;
   const cls =
-    score >= 8
+    pct >= 0.8
       ? 'bg-green-900 text-green-300'
-      : score >= 5
+      : pct >= 0.5
       ? 'bg-yellow-900 text-yellow-300'
       : 'bg-red-900 text-red-300';
-  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${cls}`}>{score.toFixed(1)}</span>;
+  return <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${cls}`}>{score.toFixed(1)}/{max}</span>;
 }
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
@@ -175,9 +176,14 @@ export default function Dashboard() {
 
   const completedSessions = sessions.filter((s) => s.status === 'completed');
   const scoredSessions = completedSessions.filter((s) => s.overall_score != null);
+  // Normalize each score to a 0–10 scale before averaging so a history mixing
+  // legacy 1–10 with new 1–5 scorecard sessions reads as a fair aggregate.
   const avgScore =
     scoredSessions.length > 0
-      ? scoredSessions.reduce((sum, s) => sum + (s.overall_score ?? 0), 0) / scoredSessions.length
+      ? scoredSessions.reduce(
+          (sum, s) => sum + (s.overall_score ?? 0) * (10 / (s.score_scale ?? 10)),
+          0,
+        ) / scoredSessions.length
       : null;
 
   const recentSessions = [...sessions]
@@ -322,7 +328,7 @@ export default function Dashboard() {
                     {formatDuration(session.started_at, session.ended_at)}
                   </td>
                   <td className="px-4 py-3">
-                    <ScoreBadge score={session.overall_score} />
+                    <ScoreBadge score={session.overall_score} max={session.score_scale ?? 10} />
                   </td>
                   <td className="px-4 py-3">
                     <span

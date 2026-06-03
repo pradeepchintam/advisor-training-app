@@ -47,12 +47,17 @@ async def list_advisors(
             .where(TrainingSession.status == "completed")
         )
         analyses = scored_result.scalars().all()
-        scores = [
-            a["overall_score"]
-            for a in analyses
-            if a and isinstance(a.get("overall_score"), (int, float))
-        ]
-        avg = sum(scores) / len(scores) if scores else None
+        # Normalize 1–5 (new scorecard) and 1–10 (legacy) into a common 0–10
+        # scale before averaging so mixed history isn't pulled in one direction.
+        normalized: list[float] = []
+        for a in analyses:
+            if not a or not isinstance(a.get("overall_score"), (int, float)):
+                continue
+            score = float(a["overall_score"])
+            scale = 5 if a.get("scorecards") else 10
+            # Stretch 1–5 → 2–10 (matches "5/5 is excellent → 10/10")
+            normalized.append(score * (10 / scale))
+        avg = sum(normalized) / len(normalized) if normalized else None
 
         stats = AdvisorWithStats.model_validate(user)
         stats.total_sessions = total
@@ -170,6 +175,7 @@ async def get_advisor(
                 "started_at": s.started_at,
                 "ended_at": s.ended_at,
                 "overall_score": s.analysis.get("overall_score") if s.analysis else None,
+                "score_scale": (5 if (s.analysis and s.analysis.get("scorecards")) else 10),
             }
             for s in sessions
         ],

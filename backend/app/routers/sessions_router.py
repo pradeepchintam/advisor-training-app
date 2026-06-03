@@ -286,6 +286,7 @@ async def list_sessions(
             ended_at=s.ended_at,
             persona=ClientPersona(**s.persona),
             overall_score=s.analysis.get("overall_score") if s.analysis else None,
+            score_scale=(5 if (s.analysis and s.analysis.get("scorecards")) else 10),
             source=s.source or "self_initiated",
             assignment_id=s.assignment_id,
             profile_name=profile_name_by_assignment.get(s.assignment_id) if s.assignment_id else None,

@@ -248,25 +248,46 @@ async def analyze_session(
 - Previous advisor: {"Yes (" + persona.previous_advisor_experience + ")" if persona.previous_advisor else "No"}
 """.strip()
 
+    # ---- Scorecard selection by appointment type ---------------------
+    from app.services.scorecard_service import (
+        scorecards_for_appointment,
+        format_scorecard_for_prompt,
+        VALUE_ADD_RUBRIC,
+        PRE_CLOSE_VERBATIM,
+    )
+
+    appointment_type = getattr(session, "appointment_type", None)
+    active_scorecards = scorecards_for_appointment(appointment_type)
+    scorecards_block = "\n\n".join(
+        format_scorecard_for_prompt(sc) for sc in active_scorecards
+    )
+    expected_types = [sc.type for sc in active_scorecards]
+
     system_prompt = """You are an expert fiduciary advisor trainer and compliance officer at Trajan Wealth, a registered investment advisory firm.
 
-Analyze recorded training sessions between a Fiduciary Advisor and a simulated client. Provide objective, actionable feedback that helps advisors improve their client engagement, financial discovery, and compliance adherence.
+You evaluate recorded training sessions between a Fiduciary Advisor and a simulated prospect/client using the firm's printed scorecards. Each scorecard item is scored on a 1–5 scale (matching the printed scorecards):
+  5 = Exceptional — best-in-class delivery
+  4 = Strong — minor polish needed
+  3 = Adequate — met the bar but missed depth or nuance
+  2 = Weak — significant gaps, partial credit only
+  1 = Poor or absent
+
+Some items are SCRIPT items — judge them against the active training script / deck PDF and (where given) a verbatim target.
+Other items are BEHAVIORAL items — judge them from rapport, confidence, value-add, objection handling, energy, and personality cues in the conversation transcript and any delivery metrics.
+
+Mark an item with `applicable=false` (and `score=null`) ONLY when the item's `skip_when` condition clearly applies. Otherwise always score it.
 
 Always respond with valid JSON only — no markdown fences, no preamble."""
 
-    # Script adherence and slide walkthrough are FIRST-CLASS criteria. We
-    # always ask the model to score them — when there is no active script or
-    # no slide events, the model returns score=null and a feedback string
-    # explaining the absence (so the UI can render an "N/A" state).
     script_block = (
-        f"\nTRAINING SCRIPT (markdown — the advisor was expected to follow this):\n{script_content}\n"
+        f"\nTRAINING SCRIPT / DECK CONTENT (the advisor was expected to follow this):\n{script_content}\n"
         if script_content
-        else "\nTRAINING SCRIPT: (no active script — score script_adherence as null with feedback 'No active training script for this session')\n"
+        else "\nTRAINING SCRIPT / DECK CONTENT: (no script/deck text available for this session — judge SCRIPT items using your knowledge of standard Trajan Wealth talking points, and call out the absence in feedback.)\n"
     )
     slide_block = (
-        f"\nSLIDE WALKTHROUGH TIMELINE (advisor's slide changes during the session):\n{slide_timeline}\n"
+        f"\nSLIDE TIMELINE (advisor's slide changes during the session):\n{slide_timeline}\n"
         if slide_events
-        else "\nSLIDE WALKTHROUGH TIMELINE: (no slides shown — score slide_walkthrough as null with feedback 'No slides were navigated during this session')\n"
+        else "\nSLIDE TIMELINE: (no slides navigated during this session)\n"
     )
 
     # Optional ASR-derived signals
@@ -286,36 +307,60 @@ Always respond with valid JSON only — no markdown fences, no preamble."""
             + format_metrics_for_prompt(delivery_metrics) + "\n"
         )
 
+    pre_close_block = ""
+    # The pre-close verbatim target only matters for 1st-meeting evaluations.
+    if any(sc.type == "first_meeting" for sc in active_scorecards):
+        pre_close_block = (
+            "\nPRE-CLOSE VERBATIM TARGET (1st Meeting only — score `pre_close_verbatim` "
+            "against this exact text):\n" + PRE_CLOSE_VERBATIM + "\n"
+        )
+
+    value_add_block = (
+        "\nVALUE-ADD RUBRIC (used for any `value_add` item):\n" + VALUE_ADD_RUBRIC + "\n"
+    )
+
+    # JSON shape skeleton — one block per active scorecard, in order.
+    sc_json_blocks = []
+    for sc in active_scorecards:
+        items_json = ",\n        ".join(
+            f'{{"key": "{item.key}", "label": "{item.label.replace(chr(34), chr(39))}", '
+            f'"kind": "{item.kind}", "applicable": <true|false>, '
+            f'"score": <1-5 number or null when applicable=false>, '
+            f'"feedback": "<specific, actionable feedback grounded in transcript evidence>"}}'
+            for item in sc.items
+        )
+        sc_json_blocks.append(
+            f'    {{\n'
+            f'      "type": "{sc.type}",\n'
+            f'      "title": "{sc.title}",\n'
+            f'      "items": [\n        {items_json}\n      ],\n'
+            f'      "summary_score": <mean of applicable item scores, 1-5 float>\n'
+            f'    }}'
+        )
+    scorecards_json_block = ",\n".join(sc_json_blocks)
+
     user_prompt = f"""Analyze this training session between a Fiduciary Advisor and a simulated client.
+
+APPOINTMENT TYPE: {appointment_type or "unspecified"}
+ACTIVE SCORECARD(S): {", ".join(sc.title for sc in active_scorecards)}
 
 CLIENT PROFILE:
 {persona_summary}
 
 FULL CONVERSATION TRANSCRIPT (live, from the browser):
 {transcript}
-{asr_block}{delivery_block}{script_block}{slide_block}
+{asr_block}{delivery_block}{script_block}{slide_block}{pre_close_block}{value_add_block}
+SCORECARD ITEMS TO GRADE (score every item; respect skip_when conditions):
 
-Provide a comprehensive evaluation in the following JSON format exactly. The
-fields `script_adherence` and `slide_walkthrough` are MANDATORY top-level keys
-— set their `score` to null (not zero) when the underlying artifact is absent,
-but always include the key with a feedback string. When delivery metrics are
-provided, fold pace / filler-word density / talk-time ratio into the
-`communication_skills` score and reference the numeric metrics in its
-feedback.
+{scorecards_block}
+
+Return JSON in EXACTLY this shape. The `scorecards` array MUST contain one entry per active scorecard, in this order: {expected_types}. Every item from each scorecard MUST appear in its scorecard's `items` list, keyed by `key` exactly as shown above. When item delivery/pace/fillers are relevant (e.g., `overall_confidence`, `personality_likeability`, `aum_overall`), fold the delivery metrics into the feedback.
 
 {{
-  "overall_score": <float 1-10>,
-  "categories": {{
-    "rapport_building": {{"score": <1-10>, "feedback": "<specific feedback>"}},
-    "financial_discovery": {{"score": <1-10>, "feedback": "<specific feedback>"}},
-    "needs_analysis": {{"score": <1-10>, "feedback": "<specific feedback>"}},
-    "product_knowledge": {{"score": <1-10>, "feedback": "<specific feedback>"}},
-    "compliance_adherence": {{"score": <1-10>, "feedback": "<specific feedback>"}},
-    "communication_skills": {{"score": <1-10>, "feedback": "<specific feedback grounded in pace/fillers if available>"}},
-    "closing_skills": {{"score": <1-10>, "feedback": "<specific feedback>"}}
-  }},
-  "script_adherence": {{"score": <1-10 or null>, "feedback": "<how closely the advisor followed the active training script — cite specific deviations or wins; if no script say so>"}},
-  "slide_walkthrough": {{"score": <1-10 or null>, "feedback": "<did the advisor present the slides in the right order, dwell appropriately on each, and reference them in the conversation? Use the slide timeline timestamps to ground your judgement. If no slides were shown say so.>"}},
+  "overall_score": <mean of all scorecard summary_scores, 1-5 float>,
+  "scorecards": [
+{scorecards_json_block}
+  ],
   "strengths": ["<strength 1>", "<strength 2>"],
   "areas_for_improvement": ["<improvement 1>", "<improvement 2>"],
   "compliance_flags": ["<flag if any compliance issues, or empty list>"],
@@ -327,7 +372,7 @@ feedback.
     def _call() -> str:
         resp = _client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=2048,
+            max_tokens=6144,
             system=[
                 {
                     "type": "text",
@@ -346,10 +391,35 @@ feedback.
     raw_text = re.sub(r"\s*```$", "", raw_text)
 
     try:
-        return json.loads(raw_text)
+        parsed = json.loads(raw_text)
     except json.JSONDecodeError:
         # Attempt to extract JSON object from the response
         match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-        raise ValueError(f"Could not parse analysis JSON from Claude response: {raw_text[:200]}")
+        if not match:
+            raise ValueError(f"Could not parse analysis JSON from Claude response: {raw_text[:200]}")
+        parsed = json.loads(match.group())
+
+    # ---- Deterministic post-processing: recompute summary + overall scores
+    #      so the UI never trusts the model's mental arithmetic. -----------
+    scorecards_out = parsed.get("scorecards") or []
+    sc_summary_scores: list[float] = []
+    for sc in scorecards_out:
+        items = sc.get("items") or []
+        applicable_scores = [
+            float(it["score"])
+            for it in items
+            if it.get("applicable", True) and isinstance(it.get("score"), (int, float))
+        ]
+        if applicable_scores:
+            summary = round(sum(applicable_scores) / len(applicable_scores), 2)
+            sc["summary_score"] = summary
+            sc_summary_scores.append(summary)
+        else:
+            sc["summary_score"] = None
+
+    if sc_summary_scores:
+        parsed["overall_score"] = round(
+            sum(sc_summary_scores) / len(sc_summary_scores), 2
+        )
+
+    return parsed

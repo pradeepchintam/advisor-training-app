@@ -94,9 +94,31 @@ export interface VideoAnalysis {
   concerns?: string[];
 }
 
+export type ScorecardType = 'first_meeting' | 'aum' | 'annuity' | 'alternatives';
+
+export interface ScorecardItemResult {
+  key: string;
+  label: string;
+  kind: 'script' | 'behavioral';
+  applicable: boolean;
+  score: number | null; // 1–5 when applicable
+  feedback: string;
+}
+
+export interface ScorecardResult {
+  type: ScorecardType;
+  title: string;
+  items: ScorecardItemResult[];
+  summary_score: number | null;
+}
+
 export interface SessionAnalysis {
+  /** 1–5 in the new scorecard shape; 1–10 in legacy sessions. */
   overall_score: number;
-  categories: {
+  /** New shape — one or two scorecards. Absent on legacy sessions. */
+  scorecards?: ScorecardResult[] | null;
+  /** Legacy 7-category dict — kept optional for backward-compat. */
+  categories?: {
     rapport_building: AnalysisCategory;
     financial_discovery: AnalysisCategory;
     needs_analysis: AnalysisCategory;
@@ -162,6 +184,8 @@ export interface SessionPublic {
   started_at: string;
   ended_at: string | null;
   overall_score?: number | null;
+  /** 5 for new scorecard sessions, 10 for legacy. Defaults to 10. */
+  score_scale?: number;
   source?: 'assigned' | 'self_initiated';
   assignment_id?: string | null;
   profile_name?: string | null;

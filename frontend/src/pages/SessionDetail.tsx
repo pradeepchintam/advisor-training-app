@@ -4,6 +4,7 @@ import { sessionsApi } from '../services/api';
 import { useToast } from '../components/Toast';
 import ScoreGauge from '../components/ScoreGauge';
 import PersonaBadge from '../components/PersonaBadge';
+import ScorecardCard from '../components/ScorecardCard';
 import type { SessionDetail as SessionDetailType, SessionAnalysis } from '../types';
 import { getErrorMessage } from '../utils/errors';
 
@@ -307,7 +308,11 @@ export default function SessionDetail() {
           </div>
           {analysis && (
             <div className="text-center">
-              <ScoreGauge score={analysis.overall_score} size={100} />
+              <ScoreGauge
+                score={analysis.overall_score}
+                max={analysis.scorecards && analysis.scorecards.length > 0 ? 5 : 10}
+                size={100}
+              />
               <div className="text-slate-500 text-xs mt-1">Overall Score</div>
             </div>
           )}
@@ -363,33 +368,22 @@ export default function SessionDetail() {
             </div>
           )}
 
-          {analysis && (
+          {analysis && (() => {
+            // New-shape analyses have a `scorecards` array (1–5 scale).
+            // Legacy analyses have `categories` (1–10 scale). Pick scale + view.
+            const isScorecardShape = Array.isArray(analysis.scorecards) && analysis.scorecards.length > 0;
+            const gaugeMax = isScorecardShape ? 5 : 10;
+            return (
             <div className="space-y-6">
               {/* Overall score + summary */}
               <div className="bg-navy-800 border border-navy-700 rounded-xl p-6">
                 <div className="flex items-center gap-6">
-                  <ScoreGauge score={analysis.overall_score} size={140} />
+                  <ScoreGauge score={analysis.overall_score} max={gaugeMax} size={140} />
                   <div className="flex-1">
                     <h2 className="text-lg font-semibold text-white mb-2">Session Summary</h2>
                     <p className="text-slate-400 text-sm leading-relaxed">{analysis.transcript_summary}</p>
                   </div>
                 </div>
-              </div>
-
-              {/* Key criteria: script adherence + slide walkthrough */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <KeyCriterionCard
-                  label="Script Adherence"
-                  icon="📋"
-                  score={analysis.script_adherence?.score}
-                  feedback={analysis.script_adherence?.feedback}
-                />
-                <KeyCriterionCard
-                  label="Slide Walkthrough"
-                  icon="🖼️"
-                  score={analysis.slide_walkthrough?.score}
-                  feedback={analysis.slide_walkthrough?.feedback}
-                />
               </div>
 
               {/* Delivery metrics (objective ASR-derived signals) */}
@@ -407,17 +401,42 @@ export default function SessionDetail() {
                 />
               )}
 
-              {/* Category scores */}
-              <div className="bg-navy-800 border border-navy-700 rounded-xl p-6">
-                <h2 className="font-semibold text-white mb-5">Performance Categories</h2>
-                <CategoryBar label="Rapport Building" score={analysis.categories.rapport_building.score} feedback={analysis.categories.rapport_building.feedback} />
-                <CategoryBar label="Financial Discovery" score={analysis.categories.financial_discovery.score} feedback={analysis.categories.financial_discovery.feedback} />
-                <CategoryBar label="Needs Analysis" score={analysis.categories.needs_analysis.score} feedback={analysis.categories.needs_analysis.feedback} />
-                <CategoryBar label="Product Knowledge" score={analysis.categories.product_knowledge.score} feedback={analysis.categories.product_knowledge.feedback} />
-                <CategoryBar label="Compliance Adherence" score={analysis.categories.compliance_adherence.score} feedback={analysis.categories.compliance_adherence.feedback} />
-                <CategoryBar label="Communication Skills" score={analysis.categories.communication_skills.score} feedback={analysis.categories.communication_skills.feedback} />
-                <CategoryBar label="Closing Skills" score={analysis.categories.closing_skills.score} feedback={analysis.categories.closing_skills.feedback} />
-              </div>
+              {/* NEW: Trajan Wealth Scorecards (1–5). One or two per session. */}
+              {isScorecardShape && (
+                <ScorecardCard scorecards={analysis.scorecards!} />
+              )}
+
+              {/* LEGACY: Key criteria + 7-category bars. Only for old sessions. */}
+              {!isScorecardShape && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <KeyCriterionCard
+                      label="Script Adherence"
+                      icon="📋"
+                      score={analysis.script_adherence?.score}
+                      feedback={analysis.script_adherence?.feedback}
+                    />
+                    <KeyCriterionCard
+                      label="Slide Walkthrough"
+                      icon="🖼️"
+                      score={analysis.slide_walkthrough?.score}
+                      feedback={analysis.slide_walkthrough?.feedback}
+                    />
+                  </div>
+                  {analysis.categories && (
+                    <div className="bg-navy-800 border border-navy-700 rounded-xl p-6">
+                      <h2 className="font-semibold text-white mb-5">Performance Categories</h2>
+                      <CategoryBar label="Rapport Building" score={analysis.categories.rapport_building.score} feedback={analysis.categories.rapport_building.feedback} />
+                      <CategoryBar label="Financial Discovery" score={analysis.categories.financial_discovery.score} feedback={analysis.categories.financial_discovery.feedback} />
+                      <CategoryBar label="Needs Analysis" score={analysis.categories.needs_analysis.score} feedback={analysis.categories.needs_analysis.feedback} />
+                      <CategoryBar label="Product Knowledge" score={analysis.categories.product_knowledge.score} feedback={analysis.categories.product_knowledge.feedback} />
+                      <CategoryBar label="Compliance Adherence" score={analysis.categories.compliance_adherence.score} feedback={analysis.categories.compliance_adherence.feedback} />
+                      <CategoryBar label="Communication Skills" score={analysis.categories.communication_skills.score} feedback={analysis.categories.communication_skills.feedback} />
+                      <CategoryBar label="Closing Skills" score={analysis.categories.closing_skills.score} feedback={analysis.categories.closing_skills.feedback} />
+                    </div>
+                  )}
+                </>
+              )}
 
               {/* Strengths & Improvements */}
               <div className="grid grid-cols-2 gap-4">
@@ -478,7 +497,8 @@ export default function SessionDetail() {
                 </div>
               )}
             </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
