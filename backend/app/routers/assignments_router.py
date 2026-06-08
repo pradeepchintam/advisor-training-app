@@ -62,8 +62,54 @@ async def _build_public(
         # Defensive: stamp in a gender if the stored persona is missing one,
         # so the assignment table shows what the session will actually use.
         # Deterministic seed → same profile always reports the same gender.
-        from app.routers.sessions_router import _ensure_persona_has_gender
+        from app.routers.sessions_router import (
+            _ensure_persona_has_gender,
+            _resolve_persona_image_url,
+            _persona_image_seed,
+        )
         _ensure_persona_has_gender(persona, seed=f"profile:{profile.id}")
+        # Stamp a persona-aware client image so the dashboard preview, the
+        # start-session page, and the live session all show the same face.
+        # randomuser.me without a seed returns a random match each call, so
+        # we MUST reuse any sibling profile's URL (same persona name) before
+        # fetching a fresh one — otherwise Linda Garcia's 1st/2nd/3rd
+        # appointments would each get a different woman.
+        async def _sibling_image(
+            target_name: str, field: str
+        ) -> str | None:
+            if not target_name:
+                return None
+            target = target_name.strip().lower()
+            sibling_q = await db.execute(
+                select(SessionProfile).where(SessionProfile.id != profile.id)
+            )
+            for sib in sibling_q.scalars():
+                if not isinstance(sib.persona, dict):
+                    continue
+                # Match against either persona.name (for primary lookup) or
+                # spouse_name (when the field we're populating is the spouse)
+                lookup = (sib.persona.get("name") or "").strip().lower()
+                if field == "spouse_image_url":
+                    lookup = (sib.persona.get("spouse_name") or "").strip().lower() or lookup
+                if lookup == target and sib.persona.get(field):
+                    return sib.persona[field]
+            return None
+
+        dirty = False
+        if not persona.client_image_url:
+            shared = await _sibling_image(persona.name, "client_image_url")
+            persona.client_image_url = shared or await _resolve_persona_image_url(persona)
+            dirty = True
+        if (
+            getattr(persona, "client_type", "") == "couple"
+            and persona.spouse_gender
+            and not persona.spouse_image_url
+        ):
+            shared_sp = await _sibling_image(persona.spouse_name or "", "spouse_image_url")
+            persona.spouse_image_url = shared_sp or await _resolve_persona_image_url(persona, spouse=True)
+            dirty = True
+        if dirty:
+            profile.persona = persona.model_dump()
 
     # Find the most recent session linked to this assignment (if any).
     sess_result = await db.execute(

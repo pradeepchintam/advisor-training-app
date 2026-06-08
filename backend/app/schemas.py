@@ -113,9 +113,15 @@ class ClientPersona(BaseModel):
     referral_source: str
     backstory: str
 
+    # Visual identity — stamped deterministically per profile so the
+    # assignment table, the start-session preview, and the live session
+    # all show the same face. See sessions_router._deterministic_image_url.
+    client_image_url: Optional[str] = None
+
     # Spouse / partner — populated when client_type == "couple"
     spouse_name: Optional[str] = None
     spouse_age: Optional[int] = None
+    spouse_age_group: Optional[str] = None  # young_adult / middle_aged / senior / elderly
     spouse_gender: Optional[str] = None
     spouse_occupation: Optional[str] = None
     spouse_employment_types: list[str] = Field(default_factory=list)

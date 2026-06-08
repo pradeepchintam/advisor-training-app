@@ -348,9 +348,14 @@ export const ttsApi = {
     gender?: 'male' | 'female' | null,
     ageGroup?: TTSAgeGroup | null,
   ): Promise<string> => {
+    if (!gender) {
+      // Loud warning rather than silent fallback — if this fires, the
+      // caller has a stale closure or hasn't loaded the persona yet.
+      console.warn('[ttsApi.synthesize] called without gender — voice will default to male', { text: text.slice(0, 60) });
+    }
     const response = await api.post(
       '/tts',
-      { text, gender, age_group: ageGroup },
+      { text, gender: gender ?? null, age_group: ageGroup ?? null },
       { responseType: 'blob' },
     );
     const blob = response.data as Blob;
@@ -358,13 +363,62 @@ export const ttsApi = {
   },
   /** Polly viseme + word speech marks for the same text, used to drive the
    *  client avatar's lip overlay. Each mark has `time` in ms. */
+  /** Open a streaming TTS connection (Aura-2 WebSocket on the backend).
+   *  Yields PCM (linear16, 24kHz, mono) chunks as they arrive — first chunk
+   *  typically lands ~250–300ms after the call vs ~2.4s for non-streaming.
+   *  Pass `signal` from an AbortController to cancel for barge-in.
+   *  Returns the audio format metadata pulled from response headers. */
+  streamPCM: async (
+    text: string,
+    gender: 'male' | 'female' | undefined,
+    ageGroup: TTSAgeGroup | undefined,
+    onChunk: (chunk: Uint8Array) => void,
+    signal?: AbortSignal,
+  ): Promise<{ sampleRate: number; channels: number } | null> => {
+    const baseUrl = api.defaults.baseURL ?? '/api';
+    // Auth token lives in localStorage and is normally injected by the
+    // axios request interceptor — fetch doesn't go through that, so we
+    // have to grab it ourselves.
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    let resp: Response;
+    try {
+      resp = await fetch(`${baseUrl}/tts/stream`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ text, gender: gender ?? null, age_group: ageGroup ?? null }),
+        signal,
+      });
+    } catch {
+      return null;
+    }
+    if (!resp.ok || !resp.body) return null;
+    const sampleRate = Number(resp.headers.get('X-Audio-Sample-Rate') || 24000);
+    const channels = Number(resp.headers.get('X-Audio-Channels') || 1);
+    const reader = resp.body.getReader();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value && value.byteLength > 0) onChunk(value);
+      }
+    } catch {
+      // Aborted or network drop — caller handles cleanup.
+    }
+    return { sampleRate, channels };
+  },
   marks: async (
     text: string,
     gender?: 'male' | 'female' | null,
     ageGroup?: TTSAgeGroup | null,
   ): Promise<VisemeMark[]> => {
     try {
-      const response = await api.post('/tts/marks', { text, gender, age_group: ageGroup });
+      const response = await api.post('/tts/marks', {
+        text,
+        gender: gender ?? null,
+        age_group: ageGroup ?? null,
+      });
       return (response.data?.marks ?? []) as VisemeMark[];
     } catch {
       return [];

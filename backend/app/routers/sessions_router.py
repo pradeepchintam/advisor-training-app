@@ -64,6 +64,159 @@ def _ensure_persona_has_gender(persona, *, seed: str | None = None) -> None:
             persona.spouse_gender = rng.choice(["male", "female"])
 
 
+# randomuser.me's `nat=` parameter is a country code, but its portrait
+# library biases the ETHNICITY of the result. We use the country whose
+# portrait pool best matches the persona's name. Names not matched here
+# fall back to a Western pool (us/gb/au/ca).
+#
+# Last-name suffixes → nat-code. Order matters (first match wins) so put
+# more-specific suffixes before shorter ones.
+_NAT_BY_LAST_NAME_SUFFIX: list[tuple[str, str]] = [
+    # South Asian (Indian / Pakistani)
+    ("patel", "in"), ("singh", "in"), ("kumar", "in"), ("sharma", "in"),
+    ("anand", "in"), ("chopra", "in"), ("gupta", "in"), ("malhotra", "in"),
+    ("reddy", "in"), ("rao", "in"), ("desai", "in"), ("nair", "in"),
+    ("iyer", "in"), ("menon", "in"), ("khanna", "in"), ("kapoor", "in"),
+    ("verma", "in"), ("agarwal", "in"), ("bose", "in"),
+    # Middle Eastern
+    ("hassan", "ir"), ("ahmed", "ir"), ("ali", "ir"), ("khan", "ir"),
+    ("rahman", "ir"), ("saleh", "ir"), ("hossein", "ir"), ("malik", "ir"),
+    # Hispanic / Latino
+    ("rivera", "mx"), ("garcia", "mx"), ("martinez", "mx"), ("hernandez", "mx"),
+    ("lopez", "mx"), ("gonzalez", "mx"), ("rodriguez", "mx"), ("perez", "mx"),
+    ("sanchez", "mx"), ("ramirez", "mx"), ("torres", "mx"), ("flores", "mx"),
+    ("ruiz", "mx"), ("vargas", "mx"), ("castillo", "mx"), ("ortiz", "mx"),
+    ("morales", "mx"), ("castellano", "mx"), ("delgado", "mx"),
+    # Brazilian-leaning Portuguese
+    ("silva", "br"), ("santos", "br"), ("oliveira", "br"), ("souza", "br"),
+    # Italian-leaning
+    ("rossi", "es"), ("bianchi", "es"), ("ferrari", "es"), ("romano", "es"),
+    # Irish
+    ("o'connor", "ie"), ("o'brien", "ie"), ("murphy", "ie"), ("kelly", "ie"),
+    ("byrne", "ie"), ("ryan", "ie"), ("walsh", "ie"), ("o'sullivan", "ie"),
+    # French
+    ("dubois", "fr"), ("laurent", "fr"), ("lefebvre", "fr"), ("moreau", "fr"),
+    # Northern European
+    ("nielsen", "dk"), ("hansen", "dk"), ("andersen", "dk"),
+    ("johansson", "fi"), ("eriksson", "fi"), ("lindgren", "fi"),
+    ("van der", "nl"), ("de vries", "nl"), ("jansen", "nl"), ("bakker", "nl"),
+    # Germanic
+    ("müller", "de"), ("schmidt", "de"), ("schneider", "de"), ("fischer", "de"),
+]
+
+_WESTERN_NATS = ("us", "gb", "au", "ca")
+
+
+def _infer_nationality(name: str | None, seed: str = "") -> str:
+    """Map persona name → randomuser.me `nat` code so the portrait roughly
+    matches the persona's likely ethnicity. East Asian names (Chen, Lin,
+    Tanaka, Kim) have no good randomuser.me bucket — we'd rather show a
+    generic Western photo than a wildly-wrong stand-in, so those return
+    a Western nat. Same for unknown names.
+    """
+    if not name:
+        return _WESTERN_NATS[0]
+    parts = name.strip().lower().split()
+    last = parts[-1] if parts else ""
+    for suffix, nat in _NAT_BY_LAST_NAME_SUFFIX:
+        if last.endswith(suffix) or last == suffix:
+            return nat
+    # Rotate through the Western nat pool by hashing the seed so we don't
+    # show 50 identical American faces in a row.
+    import hashlib
+    digest = hashlib.md5((seed or name).encode("utf-8")).hexdigest()
+    return _WESTERN_NATS[int(digest[:4], 16) % len(_WESTERN_NATS)]
+
+
+async def _fetch_randomuser_portrait(gender: str | None, nat: str) -> str | None:
+    """Fetch one portrait URL from randomuser.me matching the requested
+    gender + nationality. Returns ``picture.large`` on success, or None
+    on any failure so the caller can fall back to the static `/api/portraits/
+    {men|women}/N.jpg` library.
+
+    Note: we DON'T pass ``seed=``. randomuser.me's seed mode ignores the
+    ``gender`` and ``nat`` parameters — passing ``seed=alice`` always
+    returns the same person regardless of other filters. We keep stability
+    by persisting the returned URL on the persona instead.
+
+    Defensively verify the returned ``gender`` field matches what we
+    asked for; randomuser.me occasionally returns a mismatched record.
+    Retry up to 3 times before giving up.
+    """
+    from urllib.parse import urlencode
+    g = (gender or "").strip().lower()
+    g = "female" if g == "female" else "male"
+    params = {"gender": g, "nat": nat, "inc": "picture,gender", "noinfo": "true"}
+    url = f"https://randomuser.me/api/?{urlencode(params)}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for _ in range(3):
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    return None
+                rec = (resp.json().get("results") or [{}])[0]
+                if rec.get("gender", "").lower() == g:
+                    return rec.get("picture", {}).get("large")
+                # Mismatched gender — try again. (Rare; randomuser.me
+                # honors gender most of the time without a seed.)
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _deterministic_image_url(gender: str | None, seed: str) -> str:
+    """Fallback portrait URL — used when the seeded randomuser.me lookup
+    fails (or for legacy code paths that don't have a persona to attach
+    ethnicity heuristics to). Same logic as before: hash the seed into a
+    0–99 slot of the `/api/portraits/{men|women}/N.jpg` library.
+    """
+    import hashlib
+    g = (gender or "").strip().lower()
+    bucket = "women" if g == "female" else "men"
+    digest = hashlib.md5(seed.encode("utf-8")).hexdigest()
+    idx = int(digest[:8], 16) % 100
+    return f"https://randomuser.me/api/portraits/{bucket}/{idx}.jpg"
+
+
+async def _resolve_persona_image_url(persona, *, spouse: bool = False) -> str:
+    """Pick the best portrait URL for `persona`, considering name-based
+    nationality + gender. Tries the seeded randomuser.me API first; falls
+    back to the legacy `/api/portraits/...` library if the API hiccups.
+    """
+    if spouse:
+        name = getattr(persona, "spouse_name", None)
+        gender = getattr(persona, "spouse_gender", None)
+        seed_extra = ":spouse"
+    else:
+        name = getattr(persona, "name", None)
+        gender = getattr(persona, "gender", None)
+        seed_extra = ""
+    base_seed = _persona_image_seed(persona).removeprefix("persona:") + seed_extra
+    # For couples, derive nationality from the PRIMARY's name so both
+    # partners come from the same randomuser.me pool. Spouses typically
+    # share a last name, but for inferred-Western names the rotation could
+    # otherwise put husband and wife in different country pools.
+    primary_name = getattr(persona, "name", None)
+    nat_basis_name = primary_name if (spouse and primary_name) else name
+    nat = _infer_nationality(nat_basis_name, _persona_image_seed(persona).removeprefix("persona:"))
+    real = await _fetch_randomuser_portrait(gender, nat)
+    if real:
+        return real
+    # Last-resort fallback — never block a stamp on the network being flaky.
+    return _deterministic_image_url(gender, base_seed)
+
+
+def _persona_image_seed(persona) -> str:
+    """Seed for the deterministic portrait. Keyed on the persona's NAME
+    (lowercased + collapsed whitespace) so Linda Garcia's 1st/2nd/3rd
+    appointment profiles — which are separate DB rows but the same person —
+    all resolve to the same photo. Falls back to a stable placeholder if
+    the persona is somehow nameless."""
+    name = (getattr(persona, "name", "") or "").strip().lower()
+    name = " ".join(name.split())
+    return f"persona:{name}" if name else "persona:unknown"
+
+
 async def _fetch_client_image(gender: str) -> str:
     """Fetch a profile image URL from randomuser.me."""
     gender_param = "male" if gender.lower() == "male" else "female"
@@ -422,8 +575,20 @@ async def create_session(
         if not persona.name or not persona.backstory:
             persona = generate_persona_details(persona.model_dump())
 
-    # Fetch client image
-    image_url = await _fetch_client_image(persona.gender)
+    # Resolve client image. Prefer the persona's persisted URL (stamped
+    # at first read per-persona-name, so all three appointment stages of
+    # the same client show the same face). When missing, resolve a fresh
+    # persona-aware URL — name-inferred nationality drives randomuser.me's
+    # `nat` parameter so e.g. Aisha Patel → an Indian portrait.
+    if not getattr(persona, "client_image_url", None):
+        persona.client_image_url = await _resolve_persona_image_url(persona)
+    if (
+        getattr(persona, "client_type", "") == "couple"
+        and persona.spouse_gender
+        and not getattr(persona, "spouse_image_url", None)
+    ):
+        persona.spouse_image_url = await _resolve_persona_image_url(persona, spouse=True)
+    image_url = persona.client_image_url
 
     # Snapshot the primary deck for this appointment type (first resolved slot)
     # so recording/analysis linkage stays stable even if the admin swaps decks.

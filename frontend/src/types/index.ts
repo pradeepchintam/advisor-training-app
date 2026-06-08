@@ -32,9 +32,13 @@ export interface ClientPersona {
   urgency: 'low' | 'medium' | 'high';
   referral_source: string;
   backstory: string;
+  /** Deterministic portrait URL stamped at profile-create time so the same
+   *  face shows on the dashboard, start preview, and live session. */
+  client_image_url?: string | null;
   spouse_name?: string;
   spouse_age?: number;
-  spouse_gender?: string;
+  spouse_age_group?: 'young_adult' | 'middle_aged' | 'senior' | 'elderly';
+  spouse_gender?: 'male' | 'female';
   spouse_occupation?: string;
   spouse_employment_types?: string[];
   spouse_personality_type?: string;

@@ -221,6 +221,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
             async def _forward(chunk: str) -> None:
                 await safe_send_json({"type": "client_response_chunk", "text": chunk})
 
+            async def _announce_speaker(who: str) -> None:
+                # Couple personas only — tells the frontend whether this turn
+                # belongs to the primary or the spouse so TTS picks the right
+                # voice. Fired once per turn, BEFORE the first text chunk.
+                await safe_send_json({"type": "active_speaker", "speaker": who})
+
             client_response = ""
             try:
                 client_response = await stream_client_response(
@@ -229,6 +235,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                     advisor_message=text,
                     questionnaire_topics=questionnaire_topics,
                     on_chunk=_forward,
+                    on_speaker=_announce_speaker,
                 )
             except _asyncio.CancelledError:
                 # Server-side barge-in: advisor started talking again.

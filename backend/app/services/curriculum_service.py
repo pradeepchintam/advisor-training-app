@@ -239,6 +239,45 @@ _PERSONAS: list[dict] = [
          comms="formal", prev="bad", urgency="high", referral="Online Search",
          story="Priya is a successful consultant who has been let down by two prior "
                "advisors and demands documented evidence for every recommendation."),
+
+    # ---- Couples (client_type=couple). Index 20-22, appended after the
+    # 20 individual personas so the existing day grid is unaffected.
+    dict(key="couple-01", difficulty="easy",
+         name="Margaret Smith", gender="female", age_group="senior",
+         marital_status="married", children=2, employment="retired",
+         financial="comfortable", debt="none", risk="conservative", experience="beginner",
+         concerns=["Retirement Income", "Healthcare Costs"], personality="anxious",
+         comms="reserved", prev="none", urgency="medium", referral="Friend",
+         story="Margaret and Tom recently retired and are nervous about whether their savings "
+               "will last. Margaret defers to Tom on numbers; Tom is analytical but "
+               "uncertain about market volatility.",
+         spouse_name="Tom Smith", spouse_gender="male", spouse_age_group="senior",
+         spouse_employment="retired", spouse_personality="analytical"),
+
+    dict(key="couple-02", difficulty="medium",
+         name="Aaron Patel", gender="male", age_group="middle_aged",
+         marital_status="married", children=2, employment="employed",
+         financial="affluent", debt="manageable", risk="moderate", experience="intermediate",
+         concerns=["College Funding", "Tax Optimization"], personality="detail_oriented",
+         comms="direct", prev="none", urgency="medium", referral="Coworker",
+         story="Aaron and Priya are dual-income parents juggling 529 plans, RSU vesting, "
+               "and an aging parent. They disagree on risk tolerance — Aaron is moderate, "
+               "Priya is conservative — and want a neutral planner to mediate.",
+         spouse_name="Priya Patel", spouse_gender="female", spouse_age_group="middle_aged",
+         spouse_employment="self_employed", spouse_personality="skeptical"),
+
+    dict(key="couple-03", difficulty="hard",
+         name="Linda Castellano", gender="female", age_group="senior",
+         marital_status="married", children=3, employment="employed",
+         financial="ultra_wealthy", debt="none", risk="aggressive", experience="experienced",
+         concerns=["Estate Planning", "Business Succession"], personality="confident",
+         comms="formal", prev="bad", urgency="high", referral="Attorney",
+         story="Linda and Victor own a successful manufacturing business and are evaluating "
+               "succession + estate plans. Victor is impulsive and dominates conversations; "
+               "Linda is the steady operational mind who actually controls the finances. "
+               "They've been burned by a previous advisor's high-fee recommendations.",
+         spouse_name="Victor Castellano", spouse_gender="male", spouse_age_group="senior",
+         spouse_employment="business_owner", spouse_personality="impulsive"),
 ]
 
 
@@ -246,8 +285,24 @@ def _build_persona(spec: dict, stage: int) -> ClientPersona:
     employment = spec["employment"]
     fin = spec["financial"]
     _, _, stage_story = STAGE_META[stage]
+    is_couple = "spouse_name" in spec
+    spouse_kwargs: dict[str, object] = {}
+    if is_couple:
+        spouse_emp = spec.get("spouse_employment", employment)
+        spouse_age_group = spec.get("spouse_age_group", spec["age_group"])
+        spouse_kwargs = {
+            # client_type is set on the ClientPersona() call below; don't
+            # duplicate it here or we get "multiple values for keyword".
+            "spouse_name": spec["spouse_name"],
+            "spouse_age": AGE_BY_GROUP[spouse_age_group],
+            "spouse_age_group": spouse_age_group,
+            "spouse_gender": spec["spouse_gender"],
+            "spouse_occupation": OCCUPATION_BY_EMPLOYMENT.get(spouse_emp, "Professional"),
+            "spouse_employment_types": [spouse_emp],
+            "spouse_personality_type": spec.get("spouse_personality", spec["personality"]),
+        }
     return ClientPersona(
-        client_type="individual",
+        client_type="couple" if is_couple else "individual",
         name=spec["name"],
         age=AGE_BY_GROUP[spec["age_group"]],
         age_group=spec["age_group"],
@@ -272,6 +327,7 @@ def _build_persona(spec: dict, stage: int) -> ClientPersona:
         urgency=spec["urgency"],
         referral_source=spec["referral"],
         backstory=spec["story"] + stage_story,
+        **spouse_kwargs,
     )
 
 
@@ -284,10 +340,19 @@ def curriculum_profile_ids() -> list[str]:
 
 
 def _build_grid() -> list[list[tuple[int, int]]]:
-    """15 days, each a list of (persona_index, stage)."""
-    easy = [list(range(0, 4)), list(range(4, 8))]      # E1-4, E5-8
-    medium = [list(range(8, 12)), list(range(12, 16))]  # M1-4, M5-8
-    hard = [list(range(16, 20))]                         # D1-4
+    """18 days, each a list of (persona_index, stage).
+
+    Layout:
+      • Days 1-6 — easy individuals (8 personas across 2 batches × 3 stages)
+      • Days 7-12 — medium individuals (8 personas across 2 batches × 3 stages)
+      • Days 13-15 — hard individuals (4 personas × 3 stages)
+      • Days 16-18 — couples (3 personas × 3 stages) appended as a final
+        "couple practice" block. Indices 20-22 in _PERSONAS.
+    """
+    easy = [list(range(0, 4)), list(range(4, 8))]
+    medium = [list(range(8, 12)), list(range(12, 16))]
+    hard = [list(range(16, 20))]
+    couples = [list(range(20, 23))]
 
     grid: list[list[tuple[int, int]]] = []
     for tier_batches in (easy, medium):
@@ -297,7 +362,10 @@ def _build_grid() -> list[list[tuple[int, int]]]:
     for stage in (1, 2, 3):
         for batch in hard:
             grid.append([(i, stage) for i in batch])
-    return grid  # 6 + 6 + 3 = 15 days
+    for stage in (1, 2, 3):
+        for batch in couples:
+            grid.append([(i, stage) for i in batch])
+    return grid  # 6 + 6 + 3 + 3 = 18 days
 
 
 def _weekday_dates(start: date, count: int) -> list[date]:
@@ -374,30 +442,42 @@ async def assign_curriculum_to_advisor(
     assigned_by: str | None = None,
     start: date | None = None,
 ) -> int:
-    """Create the 60 curriculum assignments for an advisor across 15 weekdays.
+    """Create the curriculum assignments for an advisor across the day grid.
 
-    Idempotent: if the advisor already has curriculum assignments, does nothing.
-    Returns the number of assignments created.
+    Idempotent at the per-assignment level — only creates assignments for
+    (advisor, profile) pairs that don't already exist. This lets us extend
+    the curriculum later (e.g., add couples) and have existing advisors
+    pick up the new days on the next run.
+
+    Returns the number of NEW assignments created.
     """
     await ensure_curriculum_profiles(db, created_by=assigned_by)
 
-    if await advisor_has_curriculum(db, advisor_id):
-        logger.info("Advisor %s already has curriculum assignments; skipping", advisor_id)
-        return 0
+    # Discover which curriculum profiles this advisor is already assigned to,
+    # so we skip re-creating duplicates but still add any NEW profiles.
+    existing_q = await db.execute(
+        select(SessionAssignment.profile_id)
+        .where(SessionAssignment.advisor_id == advisor_id)
+        .where(SessionAssignment.profile_id.in_(curriculum_profile_ids()))
+    )
+    already_assigned: set[str] = {row[0] for row in existing_q.all()}
 
-    start = start or date.today()
-    days = _weekday_dates(start, 15)
     grid = _build_grid()
+    start = start or date.today()
+    days = _weekday_dates(start, len(grid))
 
     created = 0
     for day_index, entries in enumerate(grid):
         target = days[day_index]
         for persona_index, stage in entries:
             spec = _PERSONAS[persona_index]
+            profile_id = _profile_id(spec["key"], stage)
+            if profile_id in already_assigned:
+                continue
             db.add(
                 SessionAssignment(
                     id=str(uuid.uuid4()),
-                    profile_id=_profile_id(spec["key"], stage),
+                    profile_id=profile_id,
                     advisor_id=advisor_id,
                     assigned_by=assigned_by,
                     assigned_date=start,

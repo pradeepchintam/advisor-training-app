@@ -218,6 +218,7 @@ export function buildPersonaPayload(form: PersonaFormValues): Record<string, unk
     ...(couple && {
       spouse_name: spousePreviewName,
       spouse_age: parseInt(getAgeRange(form.spouse_age_group).split('–')[0]) + 5,
+      spouse_age_group: form.spouse_age_group,
       spouse_gender: form.spouse_gender,
       spouse_occupation: deriveOccupation(spousePrimaryEmployment),
       spouse_employment_types: form.spouse_employment_types,
@@ -249,7 +250,7 @@ export function personaToForm(p: ClientPersona): PersonaFormValues {
     previous_advisor: p.previous_advisor,
     urgency: p.urgency,
     spouse_gender: p.spouse_gender || 'female',
-    spouse_age_group: 'middle_aged',
+    spouse_age_group: p.spouse_age_group || 'middle_aged',
     spouse_employment_types: p.spouse_employment_types?.length ? p.spouse_employment_types : ['employed'],
     spouse_personality_type: p.spouse_personality_type || 'analytical',
   };
@@ -314,28 +315,28 @@ export default function PersonaBuilder({ value: form, onChange, actionSlot, topS
         <div className="bg-navy-800 border border-navy-700 rounded-xl p-6">
           <SectionTitle>Demographics</SectionTitle>
           <div className="space-y-5">
-            {!isCouple && (
-              <div>
-                <label className="block text-sm text-slate-400 mb-2">Gender</label>
-                <div className="flex gap-3">
-                  {(['male', 'female'] as const).map((g) => (
-                    <button
-                      key={g}
-                      type="button"
-                      onClick={() => set('gender', g)}
-                      className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border text-sm font-medium transition-colors ${
-                        form.gender === g
-                          ? 'bg-gold-500/10 border-gold-500 text-gold-400'
-                          : 'border-navy-600 text-slate-400 hover:border-navy-500'
-                      }`}
-                    >
-                      <span>{g === 'male' ? '👨' : '👩'}</span>
-                      <span className="capitalize">{g}</span>
-                    </button>
-                  ))}
-                </div>
+            <div>
+              <label className="block text-sm text-slate-400 mb-2">
+                {isCouple ? 'Primary Gender' : 'Gender'}
+              </label>
+              <div className="flex gap-3">
+                {(['male', 'female'] as const).map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => set('gender', g)}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border text-sm font-medium transition-colors ${
+                      form.gender === g
+                        ? 'bg-gold-500/10 border-gold-500 text-gold-400'
+                        : 'border-navy-600 text-slate-400 hover:border-navy-500'
+                    }`}
+                  >
+                    <span>{g === 'male' ? '👨' : '👩'}</span>
+                    <span className="capitalize">{g}</span>
+                  </button>
+                ))}
               </div>
-            )}
+            </div>
 
             <div>
               <label className="block text-sm text-slate-400 mb-2">Age Group</label>

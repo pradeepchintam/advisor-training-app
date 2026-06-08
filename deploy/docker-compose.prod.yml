@@ -23,6 +23,14 @@ services:
       # For non-EC2 (e.g. local prod test), pass AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # TTS provider feature flag — see app/config.py. Defaults to polly so
+      # a missing SSM param still serves a working voice. Per-request
+      # X-TTS-Provider header always overrides for A/B testing.
+      TTS_PROVIDER: ${TTS_PROVIDER:-polly}
+      # Sub-300ms streaming TTS providers. If either key is missing the
+      # dispatcher falls back to Polly silently.
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
     volumes:
       # Persistent storage for presentation slides + the original .pptx files.
       # Session recordings still go to S3 via storage_service.

@@ -27,6 +27,21 @@ _async_client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 # Helper
 # ---------------------------------------------------------------------------
 
+def age_group_from_age(age: int | None) -> str:
+    """Derive an age bucket from a numeric age. Mirrors the four ClientPersona
+    age_group values so the TTS voice picker has a sensible bucket even when
+    the spouse_age_group field is missing on legacy profiles."""
+    if age is None:
+        return "middle_aged"
+    if age < 35:
+        return "young_adult"
+    if age < 55:
+        return "middle_aged"
+    if age < 70:
+        return "senior"
+    return "elderly"
+
+
 def _format_topics(questionnaire_topics: list[dict]) -> str:
     lines = []
     for i, topic in enumerate(questionnaire_topics, 1):
@@ -67,40 +82,7 @@ async def simulate_client_response(
     """Simulate a realistic client response using claude-haiku-4-5."""
 
     topics_formatted = _format_topics(questionnaire_topics)
-    covered_count = len([m for m in conversation_history if m.get("role") == "client"])
-
-    system_prompt = f"""You are roleplaying as {persona.name}, a {persona.age}-year-old {persona.marital_status} {persona.occupation}.
-
-This is your FIRST meeting with this fiduciary advisor. You are a prospective client — you haven't signed any paperwork, you don't know this person yet, and you're here mostly to listen and decide whether you trust them enough to work together. The advisor is leading the meeting and will walk you through their firm's presentation deck before getting into your specific situation.
-
-PERSONALITY: You are {persona.personality_type} and {persona.communication_style} in communication.
-PRIVATE BACKGROUND (don't volunteer this — wait to be asked):
-- Financial situation: {persona.financial_situation}, net worth: {persona.estimated_net_worth}
-- Risk tolerance: {persona.risk_tolerance}
-- Goals weighing on your mind: {", ".join(persona.primary_concerns) if persona.primary_concerns else "general financial planning"}
-- Backstory: {persona.backstory}
-
-BEHAVIOR GUIDELINES — read these carefully:
-- Stay in character at ALL times. Never break character or mention you are an AI.
-- Keep replies SHORT (1-3 sentences typically). Real prospective clients don't monologue, especially in the first few minutes.
-- LET THE ADVISOR LEAD. Don't volunteer your goals, net worth, employment details, or family situation unless they specifically ask. If they're walking through slides, listen — react with brief questions or acknowledgements ("That makes sense", "What does that mean for someone like me?", "Hmm, okay").
-- Open the conversation politely and a bit reserved — the way a real person would when meeting a stranger who's about to handle their money. Pleasantries, maybe small talk about your day or how you found the firm — NOT your retirement plan.
-- Only share financial details proportional to what the advisor asks. If they ask "what brings you in today?", give a one-sentence high-level answer (e.g. "I've been thinking about retirement, my friend recommended you") — not your full backstory.
-- Match your personality: if anxious, sound a little hesitant; if skeptical, ask "why should I trust you?"; if analytical, ask precise follow-up questions; if friendly, be warm but still cautious.
-- If the advisor jumps straight to numbers without rapport, react naturally to that (slightly thrown off, redirect, etc.) — don't reward bad behavior by immediately complying.
-- You may glance at the slides they show and react ("That's a useful framework", "Can you explain that point again?") but you don't see the slides directly — judge from what they describe.
-
-OUTPUT FORMAT — CRITICAL:
-- Output ONLY what the client SAYS OUT LOUD. Plain spoken words.
-- NEVER write stage directions, narration, emotes, or action descriptions of ANY kind. Do not use asterisks (*pauses briefly*), underscores (_smiles_), brackets ([sighs]), parentheses with non-speech ((nervously)), or any "tone:" / "action:" prefixes.
-- No "I would say..." framing. Just say it directly.
-- If you want to convey hesitation, write the spoken hesitation itself ("Well... um, yeah, I've thought about that") — never narrate it (NOT "*hesitates*").
-
-TOPICS THE ADVISOR IS EXPECTED TO COVER OVER THE FULL CONVERSATION (this is for context — don't bring them up yourself):
-{topics_formatted}
-
-Current progress: This is exchange #{covered_count + 1}. Early exchanges should be light/relational; financial depth comes later as the advisor earns it."""
-
+    system_prompt = _build_simulate_system_prompt(persona, conversation_history, topics_formatted)
     messages = _build_conversation_messages(conversation_history, advisor_message)
 
     # Use prompt caching on the system prompt (it's large and static per session).
@@ -131,13 +113,52 @@ Current progress: This is exchange #{covered_count + 1}. Early exchanges should 
 from typing import Awaitable, Callable  # noqa: E402  (deliberate late import)
 
 
+def _is_couple(persona: ClientPersona) -> bool:
+    """True when both members of a couple are present on the persona."""
+    return (
+        getattr(persona, "client_type", "") == "couple"
+        and bool(getattr(persona, "spouse_name", None))
+        and bool(getattr(persona, "spouse_gender", None))
+    )
+
+
 def _build_simulate_system_prompt(
     persona: ClientPersona, conversation_history: list[dict], topics_formatted: str
 ) -> str:
-    """Same prompt used by simulate_client_response. Extracted so the streaming
-    variant doesn't drift from the non-streaming one."""
+    """Build the client-roleplay system prompt. Two flavors:
+      • individual — single persona, no speaker tags expected.
+      • couple — both members present; Claude prefixes every reply with
+        ``[primary]`` or ``[spouse]`` so the backend can route TTS to the
+        correct voice.
+    """
     covered_count = len([m for m in conversation_history if m.get("role") == "client"])
-    return f"""You are roleplaying as {persona.name}, a {persona.age}-year-old {persona.marital_status} {persona.occupation}.
+    common_behavior = """\
+BEHAVIOR GUIDELINES — read these carefully:
+- Stay in character at ALL times. Never break character or mention you are an AI.
+- Keep replies SHORT (1-3 sentences typically). Real prospective clients don't monologue, especially in the first few minutes.
+- LET THE ADVISOR LEAD. Don't volunteer your goals, net worth, employment details, or family situation unless they specifically ask. If they're walking through slides, listen — react with brief questions or acknowledgements ("That makes sense", "What does that mean for someone like me?", "Hmm, okay").
+- Open the conversation politely and a bit reserved — the way a real person would when meeting a stranger who's about to handle their money. Pleasantries, maybe small talk about your day or how you found the firm — NOT your retirement plan.
+- Only share financial details proportional to what the advisor asks. If they ask "what brings you in today?", give a one-sentence high-level answer (e.g. "I've been thinking about retirement, my friend recommended you") — not your full backstory.
+- Match your personality precisely.
+- If the advisor jumps straight to numbers without rapport, react naturally to that (slightly thrown off, redirect, etc.) — don't reward bad behavior by immediately complying.
+- You may glance at the slides they show and react ("That's a useful framework", "Can you explain that point again?") but you don't see the slides directly — judge from what they describe.
+
+OUTPUT FORMAT — CRITICAL:
+- Output ONLY what the client SAYS OUT LOUD. Plain spoken words.
+- NEVER write stage directions, narration, emotes, or action descriptions of ANY kind. Do not use asterisks (*pauses briefly*), underscores (_smiles_), brackets ([sighs]), parentheses with non-speech ((nervously)), or any "tone:" / "action:" prefixes.
+- No "I would say..." framing. Just say it directly.
+- If you want to convey hesitation, write the spoken hesitation itself ("Well... um, yeah, I've thought about that") — never narrate it (NOT "*hesitates*").
+"""
+
+    progress = (
+        f"Current progress: This is exchange #{covered_count + 1}. "
+        "Early exchanges should be light/relational; financial depth comes "
+        "later as the advisor earns it."
+    )
+
+    if not _is_couple(persona):
+        # ---------- Single client -----------------------------------------
+        return f"""You are roleplaying as {persona.name}, a {persona.age}-year-old {persona.marital_status} {persona.occupation}.
 
 This is your FIRST meeting with this fiduciary advisor. You are a prospective client — you haven't signed any paperwork, you don't know this person yet, and you're here mostly to listen and decide whether you trust them enough to work together. The advisor is leading the meeting and will walk you through their firm's presentation deck before getting into your specific situation.
 
@@ -148,26 +169,49 @@ PRIVATE BACKGROUND (don't volunteer this — wait to be asked):
 - Goals weighing on your mind: {", ".join(persona.primary_concerns) if persona.primary_concerns else "general financial planning"}
 - Backstory: {persona.backstory}
 
-BEHAVIOR GUIDELINES — read these carefully:
-- Stay in character at ALL times. Never break character or mention you are an AI.
-- Keep replies SHORT (1-3 sentences typically). Real prospective clients don't monologue, especially in the first few minutes.
-- LET THE ADVISOR LEAD. Don't volunteer your goals, net worth, employment details, or family situation unless they specifically ask. If they're walking through slides, listen — react with brief questions or acknowledgements ("That makes sense", "What does that mean for someone like me?", "Hmm, okay").
-- Open the conversation politely and a bit reserved — the way a real person would when meeting a stranger who's about to handle their money. Pleasantries, maybe small talk about your day or how you found the firm — NOT your retirement plan.
-- Only share financial details proportional to what the advisor asks. If they ask "what brings you in today?", give a one-sentence high-level answer (e.g. "I've been thinking about retirement, my friend recommended you") — not your full backstory.
-- Match your personality: if anxious, sound a little hesitant; if skeptical, ask "why should I trust you?"; if analytical, ask precise follow-up questions; if friendly, be warm but still cautious.
-- If the advisor jumps straight to numbers without rapport, react naturally to that (slightly thrown off, redirect, etc.) — don't reward bad behavior by immediately complying.
-- You may glance at the slides they show and react ("That's a useful framework", "Can you explain that point again?") but you don't see the slides directly — judge from what they describe.
-
-OUTPUT FORMAT — CRITICAL:
-- Output ONLY what the client SAYS OUT LOUD. Plain spoken words.
-- NEVER write stage directions, narration, emotes, or action descriptions of ANY kind. Do not use asterisks (*pauses briefly*), underscores (_smiles_), brackets ([sighs]), parentheses with non-speech ((nervously)), or any "tone:" / "action:" prefixes.
-- No "I would say..." framing. Just say it directly.
-- If you want to convey hesitation, write the spoken hesitation itself ("Well... um, yeah, I've thought about that") — never narrate it (NOT "*hesitates*").
-
+{common_behavior}
 TOPICS THE ADVISOR IS EXPECTED TO COVER OVER THE FULL CONVERSATION (this is for context — don't bring them up yourself):
 {topics_formatted}
 
-Current progress: This is exchange #{covered_count + 1}. Early exchanges should be light/relational; financial depth comes later as the advisor earns it."""
+{progress}"""
+
+    # ---------- Couple ----------------------------------------------------
+    spouse_age = persona.spouse_age or "(unspecified)"
+    spouse_personality = persona.spouse_personality_type or persona.personality_type
+    spouse_occupation = persona.spouse_occupation or "(occupation unspecified)"
+    return f"""You are roleplaying a COUPLE who has come together to this first meeting with a fiduciary advisor. They are a {persona.marital_status} couple. Speak for ONE of them per reply — choose whichever member would naturally speak next given the topic.
+
+PRIMARY ({persona.name}): {persona.age}-year-old {persona.gender}, {persona.occupation}.
+  Personality: {persona.personality_type}, {persona.communication_style}.
+SPOUSE ({persona.spouse_name}): {spouse_age}-year-old {persona.spouse_gender}, {spouse_occupation}.
+  Personality: {spouse_personality}.
+
+This is your FIRST meeting with this fiduciary advisor. You haven't signed paperwork; you're listening and deciding whether to trust them. The advisor is leading and will walk you through their deck.
+
+PRIVATE BACKGROUND (shared by the couple — don't volunteer; wait to be asked):
+- Financial situation: {persona.financial_situation}, net worth: {persona.estimated_net_worth}
+- Risk tolerance: {persona.risk_tolerance}
+- Goals weighing on you: {", ".join(persona.primary_concerns) if persona.primary_concerns else "general financial planning"}
+- Backstory: {persona.backstory}
+
+COUPLE TURN-TAKING — CRITICAL:
+- Each reply is from EXACTLY ONE speaker. Never write dialogue from both in a single reply.
+- BEGIN every reply with a speaker tag on its own at the very start of the message:
+    [primary]   if {persona.name} is speaking
+    [spouse]    if {persona.spouse_name} is speaking
+- The tag is NOT spoken aloud — it's metadata for the system. Put it as the very first thing in the reply, before any actual speech.
+- Choose the speaker naturally: the more financially-engaged partner answers money questions; the more cautious/anxious partner asks worried questions; they alternate so neither dominates. If the advisor addresses someone by name, that person speaks. If unclear, alternate from the last speaker.
+- Each reply is still SHORT (1-3 sentences) — the speaker isn't both the wife AND the husband.
+
+EXAMPLES of correct couple replies:
+    [primary] Honestly we've been worried about whether we have enough saved.
+    [spouse] My biggest concern is that we don't have time to recover if the market drops.
+
+{common_behavior}
+TOPICS THE ADVISOR IS EXPECTED TO COVER OVER THE FULL CONVERSATION (this is for context — don't bring them up yourself):
+{topics_formatted}
+
+{progress}"""
 
 
 class _StageDirectionStripper:
@@ -274,25 +318,93 @@ class _StageDirectionStripper:
         return leftover
 
 
+_SPEAKER_TAG_RE = re.compile(r"^\s*\[(primary|spouse)\]\s*", re.IGNORECASE)
+
+
+class _SpeakerTagParser:
+    """Extract the leading ``[primary]`` / ``[spouse]`` tag from a streamed
+    couple reply. The tag is buffered until enough characters have arrived
+    to either match it or decide there isn't one — then either the speaker
+    is detected (and stripped) or the buffered text is released verbatim.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._decided = False
+        self.speaker: str | None = None  # "primary" | "spouse" | None
+
+    def feed(self, text: str) -> str:
+        if self._decided:
+            return text
+        self._buffer += text
+        m = _SPEAKER_TAG_RE.match(self._buffer)
+        if m:
+            self.speaker = m.group(1).lower()
+            self._decided = True
+            remainder = self._buffer[m.end():]
+            self._buffer = ""
+            return remainder
+        # No match yet — keep buffering only while a partial tag is still
+        # plausible. The longest valid leading prefix of a tag is "[spouse]"
+        # (8 chars including brackets). Anything past 16 chars without a
+        # complete tag means there isn't one.
+        if len(self._buffer) >= 16:
+            self._decided = True
+            out = self._buffer
+            self._buffer = ""
+            return out
+        return ""
+
+    def flush(self) -> str:
+        if self._decided:
+            return ""
+        self._decided = True
+        out = self._buffer
+        self._buffer = ""
+        return out
+
+
 async def stream_client_response(
     persona: ClientPersona,
     conversation_history: list[dict],
     advisor_message: str,
     questionnaire_topics: list[dict],
     on_chunk: Callable[[str], Awaitable[None]],
+    on_speaker: Callable[[str], Awaitable[None]] | None = None,
 ) -> str:
     """Stream the simulated client's reply token-by-token, with stage
     directions filtered out before they reach the frontend.
 
     `on_chunk(text)` is awaited for each incremental text fragment. Returns
     the full concatenated (filtered) text so the caller can persist it.
+
+    For couple personas, the LLM emits a leading ``[primary]`` / ``[spouse]``
+    tag indicating which partner is speaking. We strip the tag, then fire
+    ``on_speaker(speaker)`` so the WebSocket handler can tell the frontend
+    which voice to use for this turn. Default speaker is ``primary``.
     """
     topics_formatted = _format_topics(questionnaire_topics)
     system_prompt = _build_simulate_system_prompt(persona, conversation_history, topics_formatted)
     messages = _build_conversation_messages(conversation_history, advisor_message)
 
+    is_couple = _is_couple(persona)
+    speaker_parser = _SpeakerTagParser() if is_couple else None
     stripper = _StageDirectionStripper()
+    speaker_announced = False
     full: list[str] = []
+
+    async def _emit(text: str) -> None:
+        nonlocal speaker_announced
+        if not text:
+            return
+        if is_couple and not speaker_announced and on_speaker is not None:
+            # Default to primary if the model didn't tag the reply.
+            who = (speaker_parser.speaker if speaker_parser else None) or "primary"
+            await on_speaker(who)
+            speaker_announced = True
+        full.append(text)
+        await on_chunk(text)
+
     async with _async_client.messages.stream(
         model="claude-haiku-4-5-20251001",
         max_tokens=512,
@@ -308,14 +420,25 @@ async def stream_client_response(
         async for text in stream.text_stream:
             if not text:
                 continue
-            cleaned = stripper.feed(text)
-            if cleaned:
-                full.append(cleaned)
-                await on_chunk(cleaned)
+            # Layer 1: pull off the leading speaker tag (couples only).
+            after_tag = speaker_parser.feed(text) if speaker_parser else text
+            if not after_tag:
+                continue
+            # Layer 2: strip stage directions / asterisk narration.
+            cleaned = stripper.feed(after_tag)
+            await _emit(cleaned)
+        trailing_tag = speaker_parser.flush() if speaker_parser else ""
+        if trailing_tag:
+            trailing = stripper.feed(trailing_tag)
+            await _emit(trailing)
         trailing = stripper.flush()
-        if trailing:
-            full.append(trailing)
-            await on_chunk(trailing)
+        await _emit(trailing)
+
+    # If we never emitted (e.g., empty model output for a couple), still
+    # send the speaker so the frontend doesn't time out on a missing signal.
+    if is_couple and not speaker_announced and on_speaker is not None:
+        await on_speaker((speaker_parser.speaker if speaker_parser else None) or "primary")
+
     return "".join(full)
 
 

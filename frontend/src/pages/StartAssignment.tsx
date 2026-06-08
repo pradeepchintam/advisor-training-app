@@ -94,10 +94,37 @@ export default function StartAssignment() {
 
       <div className="bg-navy-800 border border-gold-500/30 rounded-xl p-6 mb-6">
         <div className="flex items-start gap-4 mb-5">
-          <div className="w-16 h-16 rounded-full bg-navy-700 border-2 border-gold-500/50 flex items-center justify-center text-2xl font-bold text-gold-400">
-            {(p.name || assignment.profile_name).split(' ').map((n) => n[0]).join('').slice(0, 2)}
-          </div>
+          {/* Portrait(s) — show the same image(s) the live session will use.
+              The deterministic image stamp on the profile guarantees match. */}
+          {(() => {
+            const isCouple = p.client_type === 'couple' && !!p.spouse_image_url;
+            const initials = (p.name || assignment.profile_name)
+              .split(' ').map((n) => n[0]).join('').slice(0, 2);
+            const single = (
+              <div className="w-20 h-20 rounded-full overflow-hidden bg-navy-700 border-2 border-gold-500/50 flex items-center justify-center text-2xl font-bold text-gold-400 flex-shrink-0">
+                {p.client_image_url ? (
+                  <img src={p.client_image_url} alt="" className="w-full h-full object-cover" draggable={false} />
+                ) : initials}
+              </div>
+            );
+            if (!isCouple) return single;
+            return (
+              <div className="relative w-32 h-20 flex-shrink-0">
+                <div className="absolute top-0 left-0 w-20 h-20 rounded-full overflow-hidden bg-navy-700 border-2 border-navy-800 z-10">
+                  {p.client_image_url && <img src={p.client_image_url} alt="" className="w-full h-full object-cover" />}
+                </div>
+                <div className="absolute top-0 left-12 w-20 h-20 rounded-full overflow-hidden bg-navy-700 border-2 border-navy-800">
+                  {p.spouse_image_url && <img src={p.spouse_image_url} alt="" className="w-full h-full object-cover" />}
+                </div>
+              </div>
+            );
+          })()}
           <div className="flex-1">
+            <div className="text-lg font-bold text-white mb-0.5">
+              {p.client_type === 'couple' && p.spouse_name
+                ? `${p.name} & ${p.spouse_name}`
+                : p.name || assignment.profile_name}
+            </div>
             <div className="text-xs text-gold-400 uppercase tracking-wider font-semibold mb-0.5">
               {assignment.profile_name}
             </div>

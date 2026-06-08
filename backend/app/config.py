@@ -30,6 +30,22 @@ class Settings(BaseSettings):
     POLLY_VOICE_MALE: str = "Matthew"
     POLLY_ENGINE: str = "neural"
 
+    # TTS provider feature flag. Options:
+    #   "polly"      — AWS Polly neural (default, safe fallback)
+    #   "aura"       — Deepgram Aura-2 (sub-300ms TTFA, $0.030/1K chars)
+    #   "elevenlabs" — ElevenLabs Flash v2.5 (most natural, $0.050/1K chars)
+    # Per-request override: set the X-TTS-Provider header on /api/tts to
+    # benchmark side-by-side without flipping the global flag.
+    TTS_PROVIDER: str = "polly"
+    DEEPGRAM_API_KEY: str = ""
+    DEEPGRAM_TTS_BASE_URL: str = "https://api.deepgram.com/v1/speak"
+    ELEVENLABS_API_KEY: str = ""
+    ELEVENLABS_BASE_URL: str = "https://api.elevenlabs.io/v1"
+    # Flash v2.5 is the low-latency model (~75ms vendor TTFA, ~288ms P50
+    # measured). For higher naturalness at the cost of latency, switch to
+    # `eleven_multilingual_v2` for offline/non-realtime content.
+    ELEVENLABS_MODEL_ID: str = "eleven_flash_v2_5"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

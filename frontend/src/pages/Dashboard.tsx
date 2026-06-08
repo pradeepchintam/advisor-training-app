@@ -69,6 +69,42 @@ function StatusPill({ status }: { status: Assignment['status'] }) {
  *  - non-startable table (future) shows the scheduled date only — advisors
  *    cannot start a session before its scheduled day.
  */
+/** Small client portrait. For couples renders two overlapping circles so
+ *  the advisor can see at a glance that this is a joint session. */
+function ClientPortrait({
+  persona,
+}: {
+  persona: Assignment['persona'];
+}) {
+  const isCouple = persona.client_type === 'couple' && !!persona.spouse_image_url;
+  const initials = (persona.name || '?').split(' ').map((n) => n[0]).join('').slice(0, 2);
+  if (!isCouple) {
+    return (
+      <div className="w-10 h-10 rounded-full overflow-hidden bg-navy-700 border border-navy-600 flex items-center justify-center text-xs font-semibold text-gold-400 flex-shrink-0">
+        {persona.client_image_url ? (
+          <img src={persona.client_image_url} alt="" className="w-full h-full object-cover" />
+        ) : (
+          initials
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="relative w-14 h-10 flex-shrink-0">
+      <div className="absolute top-0 left-0 w-9 h-9 rounded-full overflow-hidden bg-navy-700 border-2 border-navy-800 z-10">
+        {persona.client_image_url && (
+          <img src={persona.client_image_url} alt="" className="w-full h-full object-cover" />
+        )}
+      </div>
+      <div className="absolute top-0 left-5 w-9 h-9 rounded-full overflow-hidden bg-navy-700 border-2 border-navy-800">
+        {persona.spouse_image_url && (
+          <img src={persona.spouse_image_url} alt="" className="w-full h-full object-cover" />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AssignmentTable({
   assignments,
   startable,
@@ -103,7 +139,21 @@ function AssignmentTable({
                     {a.persona.age_group?.replace('_', ' ')} · {a.persona.financial_situation} · {a.persona.personality_type}
                   </div>
                 </td>
-                <td className="px-4 py-3 text-slate-300">{a.persona.name || '—'}</td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <ClientPortrait persona={a.persona} />
+                    <div className="min-w-0">
+                      <div className="text-slate-200 truncate">
+                        {a.persona.client_type === 'couple' && a.persona.spouse_name
+                          ? `${a.persona.name} & ${a.persona.spouse_name}`
+                          : a.persona.name || '—'}
+                      </div>
+                      <div className="text-slate-500 text-[11px] capitalize">
+                        {a.persona.gender}{' · '}{a.persona.age_group?.replace('_', ' ')}
+                      </div>
+                    </div>
+                  </div>
+                </td>
                 <td className="px-4 py-3">
                   <span className="text-slate-300">{a.target_date}</span>
                   {overdue && (

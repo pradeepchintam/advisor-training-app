@@ -42,132 +42,152 @@ const PERSONALITY_EMOJI: Record<string, string> = {
 };
 
 /**
- * Animated client avatar — renders the persona photo with subtle "alive"
- * motion (breathing, periodic blink, head bob while speaking) and a
- * viseme-driven mouth overlay that pulses in time with the Polly audio.
- *
- * `mouthOpenness` is a 0..1 value driven by `audio.currentTime` against the
- * Polly viseme timeline; 0 = closed, 1 = wide open. When the client isn't
- * speaking the overlay disappears and the photo just gently breathes.
- *
- * Best results when the photo is a head-and-shoulders portrait. For random
- * stock photos the mouth overlay won't perfectly align with the photo's real
- * mouth, so we keep it small + glowy rather than trying to fake actual lips.
+ * Static client avatar — renders the persona photo with a pulsing gold ring
+ * while speaking. The viseme-driven mouth overlay was removed because the
+ * mouth position never lined up with the underlying stock photo's actual
+ * mouth, which looked worse than a still image. For couples, pass both
+ * photos via `photoUrls`; they render side-by-side in two circles, with
+ * the ring highlighting only the partner whose turn it is.
  */
 function ClientAvatar({
   size,
   isSpeaking,
   personality,
   photoUrl,
-  mouthOpenness,
+  photoUrls,
+  activePhotoIndex,
 }: {
   size: number;
   isSpeaking: boolean;
   personality?: string;
+  /** Single-photo case (individuals). */
   photoUrl?: string | null;
-  mouthOpenness?: number;
+  /** Two-photo case (couples) — primary first, spouse second. */
+  photoUrls?: (string | null | undefined)[];
+  /** When `photoUrls` is set, which circle pulses (0=primary, 1=spouse). */
+  activePhotoIndex?: number;
 }) {
-  const openness = Math.max(0, Math.min(1, mouthOpenness ?? 0));
-  const mouthW = 0.22 + openness * 0.10; // 22%..32% of avatar width
-  const mouthH = 0.03 + openness * 0.13; // 3%..16% of avatar height
   const fallbackEmoji = PERSONALITY_EMOJI[personality ?? ''] ?? '😐';
+  const urls = photoUrls && photoUrls.length > 0
+    ? photoUrls
+    : photoUrl ? [photoUrl] : [null];
+  const isPair = urls.length >= 2;
+  // For a pair, each circle is sized so the combined width matches `size`,
+  // with a small gap between them.
+  const circleSize = isPair ? Math.round(size * 0.58) : size;
 
-  return (
-    <div
-      className="relative flex-shrink-0 select-none"
-      style={{ width: size, height: size }}
-    >
-      {/* Pulsing gold ring while speaking */}
-      {isSpeaking && (
-        <span className="absolute -inset-1 rounded-full ring-2 ring-gold-400/70 animate-pulse pointer-events-none" />
-      )}
-
-      {/* Photo / fallback emoji — always breathing, gentle head-bob when speaking */}
+  const renderCircle = (url: string | null | undefined, idx: number) => {
+    const showRing = isSpeaking && (!isPair || (activePhotoIndex ?? 0) === idx);
+    return (
       <div
-        className="absolute inset-0 rounded-full overflow-hidden bg-navy-700 border border-navy-600 flex items-center justify-center"
-        style={{
-          animation: isSpeaking
-            ? 'avatar-breathe 2.4s ease-in-out infinite, avatar-bob 800ms ease-in-out infinite'
-            : 'avatar-breathe 3.2s ease-in-out infinite',
-        }}
+        key={idx}
+        className="relative flex-shrink-0 select-none"
+        style={{ width: circleSize, height: circleSize }}
       >
-        {photoUrl ? (
-          <img
-            src={photoUrl}
-            alt="client"
-            className="w-full h-full object-cover"
-            draggable={false}
-          />
-        ) : (
-          <span className="leading-none" style={{ fontSize: size * 0.7 }}>{fallbackEmoji}</span>
+        {showRing && (
+          <span className="absolute -inset-1 rounded-full ring-2 ring-gold-400/70 animate-pulse pointer-events-none" />
         )}
-
-        {/* Blink overlay — thin dark band across the upper face every few seconds */}
-        <span
-          className="absolute left-0 right-0 bg-navy-950 pointer-events-none"
-          style={{
-            top: '32%',
-            height: '8%',
-            animation: 'avatar-blink 5.3s steps(1, end) infinite',
-            opacity: 0,
-          }}
-        />
-
-        {/* Viseme-driven mouth overlay. Small dark oval with a soft gold glow
-            that scales with the current viseme's openness. Positioned at ~62%
-            Y — roughly where headshots have the mouth. */}
-        {isSpeaking && (
-          <div
-            className="absolute left-1/2 pointer-events-none"
-            style={{
-              top: '62%',
-              transform: `translate(-50%, -50%)`,
-              width: `${mouthW * 100}%`,
-              height: `${mouthH * 100}%`,
-              transition: 'width 70ms linear, height 70ms linear',
-            }}
-          >
-            <div
-              className="w-full h-full rounded-full"
-              style={{
-                background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.78) 35%, rgba(0,0,0,0.0) 85%)',
-                boxShadow: `0 0 ${12 + openness * 18}px ${4 + openness * 8}px rgba(250, 204, 21, ${0.18 + openness * 0.30})`,
-              }}
+        <div className="absolute inset-0 rounded-full overflow-hidden bg-navy-700 border border-navy-600 flex items-center justify-center">
+          {url ? (
+            <img
+              src={url}
+              alt="client"
+              className="w-full h-full object-cover"
+              draggable={false}
             />
-          </div>
-        )}
+          ) : (
+            <span className="leading-none" style={{ fontSize: circleSize * 0.7 }}>{fallbackEmoji}</span>
+          )}
+        </div>
       </div>
+    );
+  };
 
-      {/* Inline keyframes so this component is self-contained. */}
-      <style>{`
-        @keyframes avatar-breathe {
-          0%, 100% { transform: scale(1); }
-          50%      { transform: scale(1.015); }
-        }
-        @keyframes avatar-bob {
-          0%, 100% { transform: translateY(0); }
-          50%      { transform: translateY(-1.5px); }
-        }
-        @keyframes avatar-blink {
-          0%, 92%  { opacity: 0; }
-          93%, 96% { opacity: 0.82; }
-          97%, 100%{ opacity: 0; }
-        }
-      `}</style>
+  if (!isPair) return renderCircle(urls[0], 0);
+  return (
+    <div className="flex items-center gap-4" style={{ height: size }}>
+      {urls.slice(0, 2).map((u, i) => renderCircle(u, i))}
     </div>
   );
 }
 
-// Map Polly viseme codes to mouth openness 0..1.
-const VISEME_OPENNESS: Record<string, number> = {
-  sil: 0, p: 0, t: 0.18, S: 0.28, T: 0.20, f: 0.15, k: 0.28,
-  i: 0.40, r: 0.32, s: 0.22, u: 0.42, '@': 0.50,
-  a: 0.88, e: 0.42, E: 0.45, o: 0.58, O: 0.72,
-};
+/**
+ * Streaming PCM player — plays linear16 audio chunks (24kHz mono) as they
+ * arrive from the Aura-2 WebSocket TTS endpoint. Each chunk is scheduled
+ * on a precise timeline using `AudioBufferSourceNode.start(when)` so there
+ * are no gaps between chunks. Call `stop()` to abort immediately (used
+ * for barge-in).
+ *
+ * Why not just <audio src> a streaming endpoint? <audio> requires a
+ * containerized format (mp3/wav with full header), but Aura emits raw
+ * linear16 PCM with no header — that's faster to start playing (first
+ * chunk is already decodable) and avoids the mp3 frame-boundary buffering
+ * stutter that <audio> introduces.
+ */
+class StreamingPCMPlayer {
+  private ctx: AudioContext;
+  private nextStartTime: number = 0;
+  private active: boolean = true;
+  private scheduledNodes: AudioBufferSourceNode[] = [];
 
-function visemeOpennessOf(value: string | undefined): number {
-  if (!value) return 0;
-  return VISEME_OPENNESS[value] ?? 0.3;
+  constructor(sampleRate: number) {
+    this.ctx = new AudioContext({ sampleRate });
+  }
+
+  /** Push a chunk of raw linear16 PCM bytes onto the playback timeline. */
+  push(pcm: Uint8Array): void {
+    if (!this.active || pcm.byteLength === 0) return;
+    // Copy into a properly-aligned Int16Array. Slice on the underlying
+    // buffer in case the Uint8Array isn't 2-byte aligned (it always is in
+    // practice, but defensive).
+    const aligned = pcm.byteOffset % 2 === 0
+      ? new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength >>> 1)
+      : new Int16Array(pcm.slice().buffer);
+    const float32 = new Float32Array(aligned.length);
+    for (let i = 0; i < aligned.length; i++) {
+      float32[i] = aligned[i] / 32768;
+    }
+    const buffer = this.ctx.createBuffer(1, float32.length, this.ctx.sampleRate);
+    buffer.copyToChannel(float32, 0);
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.ctx.destination);
+    // Tiny lead time on the very first chunk so AudioContext fully unsuspends.
+    const startTime = Math.max(this.ctx.currentTime + 0.02, this.nextStartTime);
+    source.start(startTime);
+    this.scheduledNodes.push(source);
+    this.nextStartTime = startTime + buffer.duration;
+  }
+
+  /** Promise that resolves when all currently-scheduled audio has finished. */
+  drain(): Promise<void> {
+    const remaining = this.nextStartTime - this.ctx.currentTime;
+    if (remaining <= 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const t = setTimeout(() => resolve(), Math.max(0, remaining * 1000));
+      // Aborting the player resolves immediately via the active flag check.
+      const poll = setInterval(() => {
+        if (!this.active) {
+          clearTimeout(t);
+          clearInterval(poll);
+          resolve();
+        }
+      }, 50);
+    });
+  }
+
+  /** Stop playback immediately (barge-in). All scheduled sources are
+   *  cancelled and the AudioContext is closed. */
+  async stop(): Promise<void> {
+    this.active = false;
+    for (const node of this.scheduledNodes) {
+      try { node.stop(); } catch { /* may have already ended */ }
+    }
+    this.scheduledNodes = [];
+    try { await this.ctx.close(); } catch { /* already closed */ }
+  }
+
+  isActive(): boolean { return this.active; }
 }
 
 export default function Session() {
@@ -185,7 +205,15 @@ export default function Session() {
   const [hasAudioTrack, setHasAudioTrack] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
-  const [interimText, setInterimText] = useState('');
+  // interimText is no longer displayed (we don't show what the advisor is
+  // saying — this is meant to mimic a real face-to-face appointment). The
+  // state is kept so the existing setInterimText() calls in the WS / mic
+  // pipeline remain no-ops, but the value is never read into a render.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_interimText, setInterimText] = useState('');
+  // Mirror of activeSpeakerRef so the UI re-renders when the speaker flips
+  // mid-couple-conversation (pulsing ring follows whoever is speaking).
+  const [activeSpeaker, setActiveSpeaker] = useState<'primary' | 'spouse'>('primary');
 
   // Slide deck state. A session may have one deck (1st/2nd appt) or two
   // (3rd appt: Annuity + Private Equity) shown as tabs.
@@ -208,7 +236,6 @@ export default function Session() {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const transcriptRef = useRef<HTMLDivElement | null>(null);
   const endingRef = useRef(false);
   // Buffer of finalized speech segments accumulated since the advisor pressed
   // "Start Talking". Sent in one message when they press "Stop Talking".
@@ -230,6 +257,18 @@ export default function Session() {
   const ttsPlayingRef = useRef(false);
   // Index of the live in-progress client bubble in `messages`.
   const streamMsgIndexRef = useRef<number | null>(null);
+  // Couple personas only — which partner is speaking the current turn.
+  // Set by the WS `active_speaker` message before the first chunk arrives;
+  // the TTS queue reads this when synthesizing each sentence so the right
+  // voice (primary vs spouse gender/age_group) is used.
+  const activeSpeakerRef = useRef<'primary' | 'spouse'>('primary');
+  // Always-current pointer to the loaded persona. We can't trust closure
+  // capture in playNextSentence because the WebSocket handler may invoke
+  // it via a stale callback before the React render that picks up the
+  // fresh persona — the TTS call would then send gender=undefined and
+  // Polly would default to Matthew for everyone. The ref is updated on
+  // every render so reads inside the async path always see the latest.
+  const personaRef = useRef<SessionDetail['persona'] | null>(null);
 
   // ---- Always-on interactive mic ----------------------------------------
   // The mic is hot for the entire session. VAD silence-debounce auto-sends
@@ -262,9 +301,19 @@ export default function Session() {
   const [selectedDeviceChoice, setSelectedDeviceChoice] = useState<string>('');
 
   // ---- Avatar mouth overlay driven by Polly visemes ----------------------
-  const [mouthOpenness, setMouthOpenness] = useState(0);
-  const currentVisemesRef = useRef<import('../services/api').VisemeMark[]>([]);
-  const visemeRafRef = useRef<number | null>(null);
+  // (Viseme/lip-sync state removed — the mouth overlay never aligned with
+  // stock photos. ClientAvatar is now a still image with a speaking ring.)
+
+  // Streaming TTS — kept alongside the legacy blob-URL <audio> path so we
+  // can fall back cleanly. When the streaming endpoint is healthy we use
+  // it (sub-300ms first-audio); otherwise we drop to the existing
+  // ttsApi.synthesize blob playback.
+  const streamingPlayerRef = useRef<StreamingPCMPlayer | null>(null);
+  const streamingAbortRef = useRef<AbortController | null>(null);
+  // Set to false once a streaming attempt fails — subsequent sentences in
+  // the same session use the blob-URL fallback so we don't pay the
+  // failed-call latency tax repeatedly.
+  const streamingDisabledRef = useRef(false);
 
   // ---- AWS Transcribe live streaming path --------------------------------
   // AudioContext + Worklet capture audio from the recording stream, downsample
@@ -279,22 +328,12 @@ export default function Session() {
   const [transcribeLive, setTranscribeLive] = useState(false);
   const transcribeLiveRef = useRef(false);
 
-  // Scroll transcript to bottom
-  const scrollTranscript = useCallback(() => {
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-    }
-  }, []);
-
-  useEffect(() => {
-    scrollTranscript();
-  }, [messages, scrollTranscript]);
-
   // Load session
   useEffect(() => {
     if (!id) return;
     sessionsApi.get(id).then((s) => {
       setSession(s);
+      personaRef.current = s.persona ?? null;
       if (s.conversation?.length) {
         setMessages(s.conversation);
       }
@@ -305,6 +344,12 @@ export default function Session() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // Keep the persona ref in sync whenever React state changes — defensive
+  // against any path that updates `session` later (e.g., reconnect flows).
+  useEffect(() => {
+    personaRef.current = session?.persona ?? null;
+  }, [session?.persona]);
+
   // Timer
   useEffect(() => {
     timerRef.current = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
@@ -313,11 +358,21 @@ export default function Session() {
 
   // Helper: stop any in-flight TTS audio and free its blob URL.
   const stopAudio = useCallback(() => {
+    // Legacy <audio> path (blob URL fallback).
     if (audioRef.current) {
       try { audioRef.current.pause(); } catch { /* ignored */ }
       const src = audioRef.current.src;
       audioRef.current = null;
       if (src && src.startsWith('blob:')) URL.revokeObjectURL(src);
+    }
+    // Streaming PCM path — abort the in-flight fetch + stop scheduled audio.
+    if (streamingAbortRef.current) {
+      try { streamingAbortRef.current.abort(); } catch { /* ignored */ }
+      streamingAbortRef.current = null;
+    }
+    if (streamingPlayerRef.current) {
+      void streamingPlayerRef.current.stop();
+      streamingPlayerRef.current = null;
     }
   }, []);
 
@@ -427,12 +482,13 @@ export default function Session() {
       stopAudio();
       try {
         setSessionStatus('client_speaking');
+        // Read from the ref so we always pick up the latest persona, even
+        // if this closure was created before the session GET resolved.
+        const p = personaRef.current;
         const url = await ttsApi.synthesize(
           text,
-          session?.persona?.gender as ('male' | 'female' | undefined),
-          session?.persona?.age_group as (
-            'young_adult' | 'middle_aged' | 'senior' | 'elderly' | undefined
-          ),
+          p?.gender as ('male' | 'female' | undefined),
+          p?.age_group as ('young_adult' | 'middle_aged' | 'senior' | 'elderly' | undefined),
         );
         const audio = new Audio(url);
         audioRef.current = audio;
@@ -467,59 +523,102 @@ export default function Session() {
     }
     ttsPlayingRef.current = true;
     let blobUrl: string | null = null;
-    const gender = session?.persona?.gender as ('male' | 'female' | undefined);
-    const ageGroup = session?.persona?.age_group as (
-      'young_adult' | 'middle_aged' | 'senior' | 'elderly' | undefined
+    // Always read from the ref — closure may have been captured before the
+    // session GET resolved, in which case session?.persona would be
+    // undefined and TTS would silently default to a male voice.
+    const p = personaRef.current;
+    // For couple personas the active speaker may flip per turn — pick the
+    // matching voice. Outside a couple, this just lands on the primary.
+    const isCoupleTurn =
+      p?.client_type === 'couple' &&
+      activeSpeakerRef.current === 'spouse' &&
+      !!p?.spouse_gender;
+    const gender = (isCoupleTurn ? p?.spouse_gender : p?.gender) as (
+      'male' | 'female' | undefined
     );
+    const ageGroup = (
+      isCoupleTurn
+        ? (p?.spouse_age_group ??
+            // Fallback: bucket spouse_age into the four groups so legacy
+            // couple profiles without an explicit spouse_age_group still
+            // get a sensible voice.
+            (() => {
+              const a = p?.spouse_age;
+              if (a == null) return 'middle_aged';
+              if (a < 35) return 'young_adult';
+              if (a < 55) return 'middle_aged';
+              if (a < 70) return 'senior';
+              return 'elderly';
+            })())
+        : p?.age_group
+    ) as ('young_adult' | 'middle_aged' | 'senior' | 'elderly' | undefined);
+    // One-time diagnostic so any voice-confusion report has a paper trail
+    // in the browser console.
+    console.debug('[tts] sentence chars=%d gender=%s age=%s couple=%s',
+      next.length, gender, ageGroup, isCoupleTurn);
     try {
       setSessionStatus('client_speaking');
-      // Fetch audio + visemes in parallel — viseme timing drives the mouth
-      // overlay; if the marks call fails, we just degrade to a static mouth.
-      const [url, marks] = await Promise.all([
-        ttsApi.synthesize(next, gender, ageGroup),
-        ttsApi.marks(next, gender, ageGroup),
-      ]);
-      blobUrl = url;
-      currentVisemesRef.current = (marks || []).filter((m) => m.type === 'viseme');
-
-      const audio = new Audio(blobUrl);
-      audioRef.current = audio;
-
-      // requestAnimationFrame loop: look up the current viseme by elapsed time
-      // and translate it into mouth openness for the overlay.
-      const tick = () => {
-        if (audioRef.current !== audio) {
-          visemeRafRef.current = null;
-          return;
+      // Preferred path: streaming PCM from Aura-2 WebSocket. First audio
+      // chunk arrives in ~250-300ms vs ~2.4s for the blob-URL HTTP path.
+      // Falls back to the blob path on any error.
+      let streamed = false;
+      if (!streamingDisabledRef.current) {
+        const abort = new AbortController();
+        streamingAbortRef.current = abort;
+        try {
+          let player: StreamingPCMPlayer | null = null;
+          const meta = await ttsApi.streamPCM(
+            next, gender, ageGroup,
+            (chunk) => {
+              if (abort.signal.aborted) return;
+              if (!player) {
+                player = new StreamingPCMPlayer(meta?.sampleRate ?? 24000);
+                streamingPlayerRef.current = player;
+              }
+              player.push(chunk);
+            },
+            abort.signal,
+          );
+          if (meta && player) {
+            streamed = true;
+            await (player as StreamingPCMPlayer).drain();
+            if (streamingPlayerRef.current === player) {
+              await (player as StreamingPCMPlayer).stop();
+              streamingPlayerRef.current = null;
+            }
+          } else if (!abort.signal.aborted) {
+            // 502 (DEEPGRAM_API_KEY missing) or other failure — disable
+            // streaming for the rest of this session.
+            streamingDisabledRef.current = true;
+            console.warn('[tts] streaming unavailable, falling back to blob path');
+          }
+        } catch (err) {
+          if (!abort.signal.aborted) {
+            streamingDisabledRef.current = true;
+            console.warn('[tts] streaming failed, falling back:', err);
+          }
+        } finally {
+          if (streamingAbortRef.current === abort) streamingAbortRef.current = null;
         }
-        const tMs = audio.currentTime * 1000;
-        const list = currentVisemesRef.current;
-        // Binary-ish search; lists are short (~30-100 marks per sentence).
-        let lo = 0, hi = list.length - 1, idx = -1;
-        while (lo <= hi) {
-          const mid = (lo + hi) >> 1;
-          if (list[mid].time <= tMs) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
-        }
-        const v = idx >= 0 ? list[idx].value : undefined;
-        setMouthOpenness(visemeOpennessOf(v));
-        visemeRafRef.current = requestAnimationFrame(tick);
-      };
-      visemeRafRef.current = requestAnimationFrame(tick);
+      }
 
-      await new Promise<void>((resolve) => {
-        audio.onended = () => resolve();
-        audio.onerror = () => resolve();
-        audio.play().catch(() => resolve());
-      });
-      if (audioRef.current === audio) audioRef.current = null;
+      // Fallback: legacy non-streaming blob path. Used when Aura WS is
+      // disabled (no key, prior failure) or as a safety net.
+      if (!streamed) {
+        const url = await ttsApi.synthesize(next, gender, ageGroup);
+        blobUrl = url;
+        const audio = new Audio(blobUrl);
+        audioRef.current = audio;
+        await new Promise<void>((resolve) => {
+          audio.onended = () => resolve();
+          audio.onerror = () => resolve();
+          audio.play().catch(() => resolve());
+        });
+        if (audioRef.current === audio) audioRef.current = null;
+      }
     } catch (err) {
       console.warn('TTS sentence failed:', err);
     } finally {
-      if (visemeRafRef.current != null) {
-        cancelAnimationFrame(visemeRafRef.current);
-        visemeRafRef.current = null;
-      }
-      setMouthOpenness(0);
       if (blobUrl && blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl);
       ttsPlayingRef.current = false;
       // Continue draining; if interrupted, the queue was cleared so this exits.
@@ -741,7 +840,11 @@ export default function Session() {
       ws.onmessage = (evt) => {
         try {
           const data = JSON.parse(evt.data as string) as {
-            type: string; text?: string; message?: string; timestamp?: string;
+            type: string;
+            text?: string;
+            message?: string;
+            timestamp?: string;
+            speaker?: 'primary' | 'spouse';
           };
           if (data.type === 'transcript_partial' && data.text) {
             // Live interim transcript from AWS Transcribe. Show as the
@@ -766,11 +869,6 @@ export default function Session() {
             ttsQueueRef.current = [];
             unspokenBufRef.current = '';
             stopAudio();
-            if (visemeRafRef.current != null) {
-              cancelAnimationFrame(visemeRafRef.current);
-              visemeRafRef.current = null;
-            }
-            setMouthOpenness(0);
             streamingRef.current = false;
             streamMsgIndexRef.current = null;
             setSessionStatus('listening');
@@ -786,7 +884,17 @@ export default function Session() {
             setTranscribeLive(false);
             toast.warning(`Real-time transcription unavailable, falling back to slower path: ${data.message || ''}`);
           } else if (data.type === 'client_response_start') {
+            // Reset to the primary speaker until the backend tells us
+            // otherwise. For couples, an `active_speaker` message arrives
+            // before the first chunk.
+            activeSpeakerRef.current = 'primary';
+            setActiveSpeaker('primary');
             handleClientStart(data.timestamp || '');
+          } else if (data.type === 'active_speaker') {
+            // Couple personas: which partner is speaking this turn.
+            const who = data.speaker === 'spouse' ? 'spouse' : 'primary';
+            activeSpeakerRef.current = who;
+            setActiveSpeaker(who);
           } else if (data.type === 'client_response_chunk' && data.text) {
             handleClientChunk(data.text);
           } else if (data.type === 'client_response_end' && typeof data.text === 'string') {
@@ -884,11 +992,6 @@ export default function Session() {
         ttsQueueRef.current = [];
         unspokenBufRef.current = '';
         stopAudio();
-        if (visemeRafRef.current != null) {
-          cancelAnimationFrame(visemeRafRef.current);
-          visemeRafRef.current = null;
-        }
-        setMouthOpenness(0);
         setSessionStatus('listening');
       }
       if (newFinal) {
@@ -1195,11 +1298,6 @@ export default function Session() {
     ttsQueueRef.current = [];
     unspokenBufRef.current = '';
     stopAudio();
-    if (visemeRafRef.current != null) {
-      cancelAnimationFrame(visemeRafRef.current);
-      visemeRafRef.current = null;
-    }
-    setMouthOpenness(0);
     setSessionStatus('ready');
   }, [stopAudio]);
 
@@ -1318,8 +1416,22 @@ export default function Session() {
       {/* Top Bar */}
       <div className="flex items-center justify-between px-6 py-3 bg-navy-800 border-b border-navy-700 flex-shrink-0">
         <div className="flex items-center gap-4">
-          <div className="text-gold-400 font-bold text-sm">
-            {session?.client_name ?? 'Loading...'}
+          <div className="text-gold-400 font-bold text-sm flex items-center gap-2">
+            {(() => {
+              if (!session?.persona) return session?.client_name ?? 'Loading...';
+              const p = session.persona;
+              if (p.client_type === 'couple' && p.spouse_name) {
+                return (
+                  <>
+                    <span>{p.name} & {p.spouse_name}</span>
+                    <span className="text-[10px] uppercase tracking-wider bg-navy-700 text-slate-300 px-1.5 py-0.5 rounded">
+                      Couple
+                    </span>
+                  </>
+                );
+              }
+              return session.client_name ?? p.name;
+            })()}
           </div>
           <div className="flex items-center gap-1.5 bg-navy-900 px-3 py-1 rounded-full">
             <svg viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3 text-slate-500">
@@ -1467,89 +1579,81 @@ export default function Session() {
 
         {/* RIGHT: Advisor Panel (40%) */}
         <div className="w-[40%] min-w-[420px] flex flex-col">
-          {/* Compact client header */}
-          <div className="px-4 py-3 border-b border-navy-700 bg-navy-800 flex items-center gap-3">
-            <ClientAvatar
-              size={56}
-              isSpeaking={sessionStatus === 'client_speaking'}
-              personality={persona?.personality_type}
-              photoUrl={session?.client_image_url ?? null}
-              mouthOpenness={mouthOpenness}
-            />
-            <div className="flex-1 min-w-0">
-              <div className="text-white text-sm font-semibold truncate">{session?.client_name}</div>
-              {persona && (
-                <div className="text-slate-500 text-xs truncate">
-                  {persona.age_group.replace('_', ' ')} · {persona.personality_type.replace('_', ' ')} · {(persona.primary_concerns ?? []).join(', ')}
-                </div>
-              )}
-            </div>
-          </div>
-          {/* Conversation transcript */}
-          <div ref={transcriptRef} className="flex-1 overflow-y-auto p-6 space-y-4">
-            {messages.length === 0 && (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-center">
-                  <div className="text-4xl mb-3">🎙️</div>
-                  <div className="text-slate-500">Connecting to session...</div>
-                </div>
+          {/* Hero client photo / avatar — replaces the transcript so the
+              advisor focuses on the person, not the text. The avatar
+              animates (lip-sync via mouthOpenness) while the client speaks. */}
+          <div className="flex-1 flex flex-col items-center justify-center p-6 bg-gradient-to-b from-navy-900 to-navy-800 overflow-hidden">
+            {!session ? (
+              <div className="text-center">
+                <div className="text-4xl mb-3">🎙️</div>
+                <div className="text-slate-500">Connecting to session...</div>
               </div>
-            )}
-
-            {messages.map((msg, i) => (
-              <div
-                key={i}
-                className={`flex gap-3 ${msg.role === 'advisor' ? 'flex-row-reverse' : ''}`}
-              >
-                {/* Avatar */}
-                <div
-                  className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold ${
-                    msg.role === 'client'
-                      ? 'bg-navy-700 text-gold-400'
-                      : 'bg-gold-500 text-navy-900'
-                  }`}
-                >
-                  {msg.role === 'client' ? session?.client_name?.[0] ?? 'C' : 'A'}
-                </div>
-
-                {/* Bubble */}
-                <div
-                  className={`max-w-lg rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                    msg.role === 'client'
-                      ? 'bg-navy-800 text-slate-200 rounded-tl-sm'
-                      : 'bg-gold-500/20 border border-gold-500/30 text-white rounded-tr-sm'
-                  }`}
-                >
-                  <div className="text-xs text-slate-600 mb-1 font-medium">
-                    {msg.role === 'client' ? session?.client_name ?? 'Client' : 'You (Advisor)'}
+            ) : (
+              <div className="flex flex-col items-center gap-6 w-full">
+                {/* Hero avatar — still photo with a speaking-state ring. For
+                    couples we render BOTH photos side-by-side and pulse the
+                    ring around whichever partner is currently speaking. */}
+                <div className="relative">
+                  <ClientAvatar
+                    size={320}
+                    isSpeaking={sessionStatus === 'client_speaking'}
+                    personality={persona?.personality_type}
+                    photoUrl={session?.client_image_url ?? null}
+                    photoUrls={
+                      persona?.client_type === 'couple'
+                        ? [
+                            session?.client_image_url ?? null,
+                            persona?.spouse_image_url ?? null,
+                          ]
+                        : undefined
+                    }
+                    activePhotoIndex={activeSpeaker === 'spouse' ? 1 : 0}
+                  />
+                  {/* Status pill anchored to the avatar */}
+                  <div className="absolute -bottom-2 left-1/2 -translate-x-1/2">
+                    <div
+                      className={`px-3 py-1 rounded-full text-xs font-medium shadow-lg ${
+                        sessionStatus === 'client_speaking'
+                          ? 'bg-gold-500 text-navy-900'
+                          : sessionStatus === 'processing'
+                          ? 'bg-blue-500 text-white'
+                          : sessionStatus === 'listening'
+                          ? 'bg-green-500 text-white'
+                          : 'bg-navy-700 text-slate-300'
+                      }`}
+                    >
+                      {sessionStatus === 'client_speaking'
+                        ? 'Speaking…'
+                        : sessionStatus === 'processing'
+                        ? 'Thinking…'
+                        : sessionStatus === 'listening'
+                        ? 'Listening'
+                        : 'Ready'}
+                    </div>
                   </div>
-                  {msg.text}
                 </div>
-              </div>
-            ))}
 
-            {/* Interim speech text */}
-            {interimText && (
-              <div className="flex gap-3 flex-row-reverse">
-                <div className="w-8 h-8 rounded-full bg-gold-500 text-navy-900 flex-shrink-0 flex items-center justify-center text-xs font-bold">
-                  A
+                {/* Name + persona descriptor below the photo */}
+                <div className="text-center">
+                  <div className="text-white text-xl font-semibold">
+                    {persona?.client_type === 'couple' && persona?.spouse_name
+                      ? `${persona.name} & ${persona.spouse_name}`
+                      : session?.client_name ?? persona?.name}
+                  </div>
+                  {persona && (
+                    <div className="text-slate-500 text-xs mt-1">
+                      {persona.age_group.replace('_', ' ')}
+                      {' · '}
+                      {persona.personality_type.replace('_', ' ')}
+                    </div>
+                  )}
                 </div>
-                <div className="max-w-lg rounded-2xl px-4 py-3 bg-gold-500/10 border border-gold-500/20 text-slate-400 text-sm italic">
-                  {interimText}...
-                </div>
-              </div>
-            )}
 
-            {sessionStatus === 'processing' && (
-              <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-full bg-navy-700 text-gold-400 flex-shrink-0 flex items-center justify-center text-xs font-bold">
-                  {session?.client_name?.[0] ?? 'C'}
-                </div>
-                <div className="bg-navy-800 rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-1">
-                  <span className="w-2 h-2 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-2 h-2 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-2 h-2 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
+                {/* Intentionally no on-screen text. This is meant to feel
+                    like a real client appointment — the advisor talks, the
+                    client listens, both watch each other's face. The full
+                    transcript is still captured server-side for the
+                    post-session scorecard but is never shown live. */}
               </div>
             )}
           </div>
