@@ -234,7 +234,8 @@ export default function Session() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // (audioRef removed — the legacy <audio> blob path is gone; only the
+  // StreamingPCMPlayer is used now.)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const endingRef = useRef(false);
   // Buffer of finalized speech segments accumulated since the advisor pressed
@@ -304,16 +305,11 @@ export default function Session() {
   // (Viseme/lip-sync state removed — the mouth overlay never aligned with
   // stock photos. ClientAvatar is now a still image with a speaking ring.)
 
-  // Streaming TTS — kept alongside the legacy blob-URL <audio> path so we
-  // can fall back cleanly. When the streaming endpoint is healthy we use
-  // it (sub-300ms first-audio); otherwise we drop to the existing
-  // ttsApi.synthesize blob playback.
+  // Streaming TTS player + current AbortController. ElevenLabs is the
+  // only TTS path — no blob/non-streaming fallback. If the stream fails,
+  // the sentence is dropped (logged) and we continue with the next.
   const streamingPlayerRef = useRef<StreamingPCMPlayer | null>(null);
   const streamingAbortRef = useRef<AbortController | null>(null);
-  // Set to false once a streaming attempt fails — subsequent sentences in
-  // the same session use the blob-URL fallback so we don't pay the
-  // failed-call latency tax repeatedly.
-  const streamingDisabledRef = useRef(false);
 
   // ---- AWS Transcribe live streaming path --------------------------------
   // AudioContext + Worklet capture audio from the recording stream, downsample
@@ -358,14 +354,7 @@ export default function Session() {
 
   // Helper: stop any in-flight TTS audio and free its blob URL.
   const stopAudio = useCallback(() => {
-    // Legacy <audio> path (blob URL fallback).
-    if (audioRef.current) {
-      try { audioRef.current.pause(); } catch { /* ignored */ }
-      const src = audioRef.current.src;
-      audioRef.current = null;
-      if (src && src.startsWith('blob:')) URL.revokeObjectURL(src);
-    }
-    // Streaming PCM path — abort the in-flight fetch + stop scheduled audio.
+    // Abort the in-flight fetch + stop scheduled audio.
     if (streamingAbortRef.current) {
       try { streamingAbortRef.current.abort(); } catch { /* ignored */ }
       streamingAbortRef.current = null;
@@ -476,38 +465,51 @@ export default function Session() {
     }
   }, [presentation, currentSlide]);
 
-  // Speak text via AWS Polly (server-side). Returns when audio playback ends.
+  // Speak a single message via streaming TTS (ElevenLabs). Used for the
+  // one-shot replay path (e.g., re-speaking the opening greeting when a
+  // session is reloaded mid-conversation). Same player class as the
+  // sentence queue uses — sub-300ms time-to-first-audio.
   const speak = useCallback(
     async (text: string) => {
       stopAudio();
       try {
         setSessionStatus('client_speaking');
-        // Read from the ref so we always pick up the latest persona, even
-        // if this closure was created before the session GET resolved.
         const p = personaRef.current;
-        const url = await ttsApi.synthesize(
-          text,
-          p?.gender as ('male' | 'female' | undefined),
-          p?.age_group as ('young_adult' | 'middle_aged' | 'senior' | 'elderly' | undefined),
+        const gender = p?.gender as ('male' | 'female' | undefined);
+        const ageGroup = p?.age_group as (
+          'young_adult' | 'middle_aged' | 'senior' | 'elderly' | undefined
         );
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.onended = () => {
-          stopAudio();
-          setSessionStatus('ready');
-        };
-        audio.onerror = () => {
-          stopAudio();
-          setSessionStatus('ready');
-        };
-        await audio.play();
+        const abort = new AbortController();
+        streamingAbortRef.current = abort;
+        let player: StreamingPCMPlayer | null = null;
+        const meta = await ttsApi.streamPCM(
+          text, gender, ageGroup,
+          (chunk) => {
+            if (abort.signal.aborted) return;
+            if (!player) {
+              player = new StreamingPCMPlayer(meta?.sampleRate ?? 24000);
+              streamingPlayerRef.current = player;
+            }
+            player.push(chunk);
+          },
+          abort.signal,
+        );
+        if (meta && player) {
+          await (player as StreamingPCMPlayer).drain();
+          if (streamingPlayerRef.current === player) {
+            await (player as StreamingPCMPlayer).stop();
+            streamingPlayerRef.current = null;
+          }
+        }
+        if (streamingAbortRef.current === abort) streamingAbortRef.current = null;
+        setSessionStatus('ready');
       } catch (err) {
         stopAudio();
         toast.error(`TTS error: ${getErrorMessage(err)}`);
         setSessionStatus('ready');
       }
     },
-    [session?.persona?.gender, session?.persona?.age_group, stopAudio, toast]
+    [stopAudio, toast]
   );
 
   // ---- Sentence-level streaming TTS --------------------------------------
@@ -522,7 +524,6 @@ export default function Session() {
       return;
     }
     ttsPlayingRef.current = true;
-    let blobUrl: string | null = null;
     // Always read from the ref — closure may have been captured before the
     // session GET resolved, in which case session?.persona would be
     // undefined and TTS would silently default to a male voice.
@@ -558,68 +559,45 @@ export default function Session() {
       next.length, gender, ageGroup, isCoupleTurn);
     try {
       setSessionStatus('client_speaking');
-      // Preferred path: streaming PCM from Aura-2 WebSocket. First audio
-      // chunk arrives in ~250-300ms vs ~2.4s for the blob-URL HTTP path.
-      // Falls back to the blob path on any error.
-      let streamed = false;
-      if (!streamingDisabledRef.current) {
-        const abort = new AbortController();
-        streamingAbortRef.current = abort;
-        try {
-          let player: StreamingPCMPlayer | null = null;
-          const meta = await ttsApi.streamPCM(
-            next, gender, ageGroup,
-            (chunk) => {
-              if (abort.signal.aborted) return;
-              if (!player) {
-                player = new StreamingPCMPlayer(meta?.sampleRate ?? 24000);
-                streamingPlayerRef.current = player;
-              }
-              player.push(chunk);
-            },
-            abort.signal,
-          );
-          if (meta && player) {
-            streamed = true;
-            await (player as StreamingPCMPlayer).drain();
-            if (streamingPlayerRef.current === player) {
-              await (player as StreamingPCMPlayer).stop();
-              streamingPlayerRef.current = null;
+      // Streaming PCM from ElevenLabs Flash v2.5. First audio chunk
+      // arrives in ~250ms; no blob/non-streaming fallback (would mean
+      // 2+ second silence anyway and Polly's gone). On stream failure
+      // we just log + skip this sentence.
+      const abort = new AbortController();
+      streamingAbortRef.current = abort;
+      try {
+        let player: StreamingPCMPlayer | null = null;
+        const meta = await ttsApi.streamPCM(
+          next, gender, ageGroup,
+          (chunk) => {
+            if (abort.signal.aborted) return;
+            if (!player) {
+              player = new StreamingPCMPlayer(meta?.sampleRate ?? 24000);
+              streamingPlayerRef.current = player;
             }
-          } else if (!abort.signal.aborted) {
-            // 502 (DEEPGRAM_API_KEY missing) or other failure — disable
-            // streaming for the rest of this session.
-            streamingDisabledRef.current = true;
-            console.warn('[tts] streaming unavailable, falling back to blob path');
+            player.push(chunk);
+          },
+          abort.signal,
+        );
+        if (meta && player) {
+          await (player as StreamingPCMPlayer).drain();
+          if (streamingPlayerRef.current === player) {
+            await (player as StreamingPCMPlayer).stop();
+            streamingPlayerRef.current = null;
           }
-        } catch (err) {
-          if (!abort.signal.aborted) {
-            streamingDisabledRef.current = true;
-            console.warn('[tts] streaming failed, falling back:', err);
-          }
-        } finally {
-          if (streamingAbortRef.current === abort) streamingAbortRef.current = null;
+        } else if (!abort.signal.aborted) {
+          console.warn('[tts] streaming unavailable — sentence skipped');
         }
-      }
-
-      // Fallback: legacy non-streaming blob path. Used when Aura WS is
-      // disabled (no key, prior failure) or as a safety net.
-      if (!streamed) {
-        const url = await ttsApi.synthesize(next, gender, ageGroup);
-        blobUrl = url;
-        const audio = new Audio(blobUrl);
-        audioRef.current = audio;
-        await new Promise<void>((resolve) => {
-          audio.onended = () => resolve();
-          audio.onerror = () => resolve();
-          audio.play().catch(() => resolve());
-        });
-        if (audioRef.current === audio) audioRef.current = null;
+      } catch (err) {
+        if (!abort.signal.aborted) {
+          console.warn('[tts] streaming failed — sentence skipped:', err);
+        }
+      } finally {
+        if (streamingAbortRef.current === abort) streamingAbortRef.current = null;
       }
     } catch (err) {
       console.warn('TTS sentence failed:', err);
     } finally {
-      if (blobUrl && blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl);
       ttsPlayingRef.current = false;
       // Continue draining; if interrupted, the queue was cleared so this exits.
       if (ttsQueueRef.current.length > 0) {

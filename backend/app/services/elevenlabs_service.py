@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Literal
 
 import httpx
 
@@ -176,62 +175,3 @@ async def stream_pcm(
         raise RuntimeError(f"ElevenLabs network error: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# Non-streaming HTTP fallback (matches polly / aura `synthesize` contract).
-# Useful for the legacy POST /api/tts blob path when streaming is disabled.
-# ---------------------------------------------------------------------------
-
-async def synthesize(
-    text: str,
-    gender: str | None = None,
-    age_group: str | None = None,
-) -> bytes:
-    """Buffer the streaming response into a single MP3-compatible blob.
-
-    The streaming endpoint returns raw PCM; we'd need to wrap it as WAV for
-    a <audio> element to play it. For the non-streaming fallback path,
-    we use the MP3 endpoint instead so the blob plays natively.
-    """
-    if not text or not text.strip():
-        raise ValueError("text is required")
-    if not is_available():
-        raise RuntimeError("ElevenLabs is not configured (ELEVENLABS_API_KEY unset)")
-
-    voice_id = _pick_voice(gender, age_group)
-    settings_obj = _voice_settings(age_group)
-    if len(text) > 5000:
-        text = text[:5000].rsplit(" ", 1)[0]
-
-    url = f"{settings.ELEVENLABS_BASE_URL}/text-to-speech/{voice_id}"
-    params = {"output_format": "mp3_44100_128"}
-    headers = {
-        "xi-api-key": settings.ELEVENLABS_API_KEY,
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg",
-    }
-    body = {
-        "text": text,
-        "model_id": settings.ELEVENLABS_MODEL_ID,
-        "voice_settings": settings_obj,
-    }
-
-    client = await _get_client()
-    try:
-        resp = await client.post(url, params=params, headers=headers, json=body)
-    except httpx.HTTPError as e:
-        logger.exception("ElevenLabs synthesis network error voice=%s", voice_id)
-        raise RuntimeError(f"ElevenLabs network error: {e}") from e
-    if resp.status_code != 200:
-        snippet = (resp.text or "")[:300]
-        raise RuntimeError(f"ElevenLabs returned {resp.status_code}: {snippet}")
-    return resp.content
-
-
-async def fetch_visemes(
-    text: str,
-    gender: str | None = None,
-    age_group: str | None = None,
-) -> list[dict]:
-    """ElevenLabs doesn't emit visemes — same as Aura. Returns empty so the
-    frontend skips lip-sync animation."""
-    return []

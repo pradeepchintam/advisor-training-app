@@ -327,43 +327,11 @@ export const assignmentsApi = {
   },
 };
 
-// Text-to-speech via AWS Polly
-export interface VisemeMark {
-  time: number; // milliseconds from start of audio
-  type: 'viseme' | 'word';
-  value: string;
-  start?: number;
-  end?: number;
-}
-
 /** Persona age bucket — drives voice + prosody on the TTS side. */
 export type TTSAgeGroup = 'young_adult' | 'middle_aged' | 'senior' | 'elderly';
 
 export const ttsApi = {
-  /** Synthesize text to mp3 bytes. Returns an object URL that <audio src> can use.
-   *  `ageGroup` shifts the voice (Ruth/Joey for young, Joanna/Matthew for middle-aged,
-   *   Kendra/Stephen with slowed prosody for senior/elderly). */
-  synthesize: async (
-    text: string,
-    gender?: 'male' | 'female' | null,
-    ageGroup?: TTSAgeGroup | null,
-  ): Promise<string> => {
-    if (!gender) {
-      // Loud warning rather than silent fallback — if this fires, the
-      // caller has a stale closure or hasn't loaded the persona yet.
-      console.warn('[ttsApi.synthesize] called without gender — voice will default to male', { text: text.slice(0, 60) });
-    }
-    const response = await api.post(
-      '/tts',
-      { text, gender: gender ?? null, age_group: ageGroup ?? null },
-      { responseType: 'blob' },
-    );
-    const blob = response.data as Blob;
-    return URL.createObjectURL(blob);
-  },
-  /** Polly viseme + word speech marks for the same text, used to drive the
-   *  client avatar's lip overlay. Each mark has `time` in ms. */
-  /** Open a streaming TTS connection (Aura-2 WebSocket on the backend).
+  /** Open a streaming TTS connection (ElevenLabs Flash v2.5 on the backend).
    *  Yields PCM (linear16, 24kHz, mono) chunks as they arrive — first chunk
    *  typically lands ~250–300ms after the call vs ~2.4s for non-streaming.
    *  Pass `signal` from an AbortController to cancel for barge-in.
@@ -407,22 +375,6 @@ export const ttsApi = {
       // Aborted or network drop — caller handles cleanup.
     }
     return { sampleRate, channels };
-  },
-  marks: async (
-    text: string,
-    gender?: 'male' | 'female' | null,
-    ageGroup?: TTSAgeGroup | null,
-  ): Promise<VisemeMark[]> => {
-    try {
-      const response = await api.post('/tts/marks', {
-        text,
-        gender: gender ?? null,
-        age_group: ageGroup ?? null,
-      });
-      return (response.data?.marks ?? []) as VisemeMark[];
-    } catch {
-      return [];
-    }
   },
 };
 
