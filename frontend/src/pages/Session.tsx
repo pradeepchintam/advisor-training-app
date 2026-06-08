@@ -1035,12 +1035,14 @@ export default function Session() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, token]);
 
-  // Speak first client message on load if conversation already has messages
+  // Speak first client message on load if conversation already has messages.
+  // Skipped in one-sided practice mode (engage_client=false) — the client
+  // never speaks there.
   useEffect(() => {
-    if (messages.length === 1 && messages[0].role === 'client') {
+    if (session?.engage_client && messages.length === 1 && messages[0].role === 'client') {
       setTimeout(() => speak(messages[0].text), 800);
     }
-  }, [messages, speak]);
+  }, [messages, speak, session?.engage_client]);
 
   // Speech Recognition
   const startListening = useCallback(() => {
@@ -1717,7 +1719,9 @@ export default function Session() {
                           : 'bg-navy-700 text-slate-300'
                       }`}
                     >
-                      {sessionStatus === 'client_speaking'
+                      {session && session.engage_client === false
+                        ? (sessionStatus === 'listening' ? 'Recording' : 'Ready')
+                        : sessionStatus === 'client_speaking'
                         ? 'Speaking…'
                         : sessionStatus === 'processing'
                         ? 'Thinking…'
@@ -1740,6 +1744,13 @@ export default function Session() {
                       {persona.age_group.replace('_', ' ')}
                       {' · '}
                       {persona.personality_type.replace('_', ' ')}
+                    </div>
+                  )}
+                  {/* Practice-mode banner — the client won't respond. */}
+                  {session && session.engage_client === false && (
+                    <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-navy-700 border border-navy-600 text-slate-300 text-xs">
+                      <span>🎯</span>
+                      <span>Practice walkthrough — present the deck; the client won't respond. You're still being recorded &amp; scored.</span>
                     </div>
                   )}
                 </div>

@@ -19,6 +19,8 @@ export default function StartAssignment() {
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Default unchecked → one-sided deck-walkthrough practice (client silent).
+  const [engageClient, setEngageClient] = useState(false);
   const startedRef = useRef(false);
 
   useEffect(() => {
@@ -46,7 +48,7 @@ export default function StartAssignment() {
     startedRef.current = true;
     setStarting(true);
     try {
-      const session = await sessionsApi.createFromAssignment(assignmentId);
+      const session = await sessionsApi.createFromAssignment(assignmentId, engageClient);
       toast.success('Session created. Connecting…');
       navigate(`/sessions/${session.id}`);
     } catch (err) {
@@ -172,6 +174,26 @@ export default function StartAssignment() {
           </div>
         )}
 
+        {/* Engage Client toggle. Default OFF = one-sided deck walkthrough;
+            the advisor practices presenting and is still scored, but the
+            client never speaks. Turn ON for an interactive client. */}
+        <label className="flex items-start gap-3 mb-4 p-3 rounded-lg border border-navy-700 bg-navy-900 cursor-pointer hover:border-navy-600 transition-colors">
+          <input
+            type="checkbox"
+            checked={engageClient}
+            onChange={(e) => setEngageClient(e.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-gold-500 flex-shrink-0"
+          />
+          <span className="min-w-0">
+            <span className="text-sm font-medium text-white">Engage Client</span>
+            <span className="block text-xs text-slate-500 mt-0.5">
+              {engageClient
+                ? 'The client will respond interactively — a full two-way roleplay.'
+                : 'Off: a one-sided practice run. You present the deck; the client stays silent. Your delivery is still recorded and scored.'}
+            </span>
+          </span>
+        </label>
+
         {(() => {
           const todayStr = new Date().toISOString().slice(0, 10);
           const isFuture = assignment.target_date > todayStr;
@@ -183,7 +205,7 @@ export default function StartAssignment() {
                 disabled={starting || blocked}
                 className="w-full bg-gold-500 hover:bg-gold-400 disabled:opacity-60 disabled:cursor-not-allowed text-navy-900 font-bold py-3 rounded-lg transition-colors shadow-lg shadow-gold-500/20"
               >
-                {starting ? 'Starting session…' : 'Start Session'}
+                {starting ? 'Starting session…' : engageClient ? 'Start Interactive Session' : 'Start Practice Walkthrough'}
               </button>
               {isFuture && (
                 <p className="text-center text-slate-500 text-xs mt-3">

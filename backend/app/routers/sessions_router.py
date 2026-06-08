@@ -465,6 +465,7 @@ async def list_sessions(
             source=s.source or "self_initiated",
             assignment_id=s.assignment_id,
             profile_name=profile_name_by_assignment.get(s.assignment_id) if s.assignment_id else None,
+            engage_client=bool(getattr(s, "engage_client", False)),
         )
         for s in sessions
     ]
@@ -607,6 +608,7 @@ async def create_session(
         assignment_id=assignment_id,
         presentation_id=presentation_id,
         appointment_type=appointment_type,
+        engage_client=bool(payload.engage_client),
     )
     db.add(session)
     await db.flush()
@@ -624,6 +626,7 @@ async def create_session(
         source=session.source,
         assignment_id=session.assignment_id,
         profile_name=profile_name,
+        engage_client=session.engage_client,
     )
 
 
@@ -696,6 +699,7 @@ async def get_session(
         source=session.source or "self_initiated",
         assignment_id=session.assignment_id,
         profile_name=profile_name,
+        engage_client=bool(getattr(session, "engage_client", False)),
     )
 
 

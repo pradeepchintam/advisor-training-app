@@ -136,6 +136,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
         persona = ClientPersona(**session.persona)
         conversation: list[dict] = list(session.conversation or [])
         slide_events: list[dict] = list(session.slide_events or [])
+        # One-sided practice mode when False: the client never speaks, we just
+        # record + transcribe the advisor's walkthrough for scoring.
+        engage_client: bool = bool(getattr(session, "engage_client", False))
 
         # Prefer the deck recorded on the session (so the slides match what the
         # analyzer will grade against). Fall back to whatever is active now.
@@ -157,6 +160,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
             "message": f"Connected to session with {persona.name}",
             "client_name": persona.name,
             "client_image_url": session.client_image_url,
+            "engage_client": engage_client,
             "presentation": (
                 {
                     "id": active_presentation.id,
@@ -213,6 +217,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                 return
             ts = datetime.now(timezone.utc).isoformat()
             conversation.append({"role": "advisor", "text": text, "timestamp": ts})
+
+            # One-sided practice mode: record the advisor's speech for scoring
+            # but the client stays silent — no Claude call, no TTS.
+            if not engage_client:
+                session.conversation = list(conversation)
+                await db.commit()
+                return
 
             start_ts = datetime.now(timezone.utc).isoformat()
             is_client_speaking["value"] = True

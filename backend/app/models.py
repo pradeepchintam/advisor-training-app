@@ -66,6 +66,12 @@ class TrainingSession(Base):
     # Appointment type ("first" | "second" | "third"), inherited from the
     # assignment's profile. Drives which deck(s) + script(s) are used.
     appointment_type: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    # When False (the default), the simulated client does NOT speak — the
+    # session is a one-sided deck walkthrough for the advisor to practice
+    # presenting. Video is still recorded and the advisor's delivery is
+    # still scored. When True, the client engages interactively (the
+    # original behavior).
+    engage_client: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     assignment_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("session_assignments.id", ondelete="SET NULL"),

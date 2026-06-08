@@ -149,6 +149,9 @@ class SessionCreate(BaseModel):
     """
     persona: Optional[ClientPersona] = None
     assignment_id: Optional[str] = None
+    # When False (default), the simulated client stays silent — a one-sided
+    # deck-walkthrough practice. When True, the client engages interactively.
+    engage_client: bool = False
 
 
 class ConversationMessage(BaseModel):
@@ -174,6 +177,7 @@ class SessionPublic(BaseModel):
     source: str = "self_initiated"
     assignment_id: Optional[str] = None
     profile_name: Optional[str] = None  # populated when source == "assigned"
+    engage_client: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -193,6 +197,7 @@ class SessionDetail(BaseModel):
     source: str = "self_initiated"
     assignment_id: Optional[str] = None
     profile_name: Optional[str] = None
+    engage_client: bool = False
 
     model_config = {"from_attributes": True}
 

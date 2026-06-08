@@ -193,10 +193,12 @@ export interface SessionPublic {
   source?: 'assigned' | 'self_initiated';
   assignment_id?: string | null;
   profile_name?: string | null;
+  engage_client?: boolean;
 }
 
 export interface SessionDetail extends Session {
   duration_seconds?: number;
+  engage_client?: boolean;
 }
 
 export interface QuestionnaireCategory {

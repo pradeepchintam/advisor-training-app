@@ -100,13 +100,24 @@ export const sessionsApi = {
     const response = await api.get('/sessions', { params });
     return response.data;
   },
-  create: async (persona: Partial<ClientPersona>): Promise<SessionDetail> => {
-    const response = await api.post('/sessions', { persona });
+  create: async (
+    persona: Partial<ClientPersona>,
+    engageClient = false,
+  ): Promise<SessionDetail> => {
+    const response = await api.post('/sessions', { persona, engage_client: engageClient });
     return response.data;
   },
-  /** Start a session that the admin assigned. Persona is locked server-side. */
-  createFromAssignment: async (assignmentId: string): Promise<SessionDetail> => {
-    const response = await api.post('/sessions', { assignment_id: assignmentId });
+  /** Start a session that the admin assigned. Persona is locked server-side.
+   *  `engageClient` (default false) — when false the client stays silent and
+   *  it's a one-sided deck-walkthrough practice. */
+  createFromAssignment: async (
+    assignmentId: string,
+    engageClient = false,
+  ): Promise<SessionDetail> => {
+    const response = await api.post('/sessions', {
+      assignment_id: assignmentId,
+      engage_client: engageClient,
+    });
     return response.data;
   },
   get: async (id: string): Promise<SessionDetail> => {

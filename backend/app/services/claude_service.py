@@ -504,11 +504,37 @@ async def analyze_session(
     )
 
     appointment_type = getattr(session, "appointment_type", None)
+    engage_client = bool(getattr(session, "engage_client", False))
     active_scorecards = scorecards_for_appointment(appointment_type)
     scorecards_block = "\n\n".join(
         format_scorecard_for_prompt(sc) for sc in active_scorecards
     )
     expected_types = [sc.type for sc in active_scorecards]
+
+    # One-sided practice mode: the client never spoke. The advisor walked
+    # through the deck solo. Items that REQUIRE client interaction
+    # (objection handling, question handling, closing-with-silence, reading
+    # the room) can't be observed — instruct the model to mark those N/A
+    # rather than penalize the advisor for them, and to grade what IS
+    # present (delivery, script adherence, verbatim accuracy, slide flow,
+    # confidence, value-add framing).
+    solo_block = ""
+    if not engage_client:
+        solo_block = (
+            "\nIMPORTANT — ONE-SIDED PRACTICE SESSION:\n"
+            "This was a solo deck walkthrough. The CLIENT DID NOT SPEAK at all "
+            "(the advisor practiced presenting without an interactive client). "
+            "The transcript therefore contains only the advisor's speech.\n"
+            "  • Grade items that can be observed from a solo walkthrough: "
+            "presentation delivery, verbatim/script adherence, slide flow, "
+            "pacing, confidence, clarity, value-add framing, and the pre-close "
+            "statement.\n"
+            "  • For items that INHERENTLY require a client (objection handling, "
+            "question handling, close-and-silence, reading the prospect, "
+            "double-confirming the next appointment with the client), set "
+            "applicable=false with feedback noting they couldn't be assessed in "
+            "a one-sided session — do NOT give a low score for their absence.\n"
+        )
 
     system_prompt = """You are an expert fiduciary advisor trainer and compliance officer at Trajan Wealth, a registered investment advisory firm.
 
@@ -590,7 +616,7 @@ Always respond with valid JSON only — no markdown fences, no preamble."""
 
 APPOINTMENT TYPE: {appointment_type or "unspecified"}
 ACTIVE SCORECARD(S): {", ".join(sc.title for sc in active_scorecards)}
-
+{solo_block}
 CLIENT PROFILE:
 {persona_summary}
 
