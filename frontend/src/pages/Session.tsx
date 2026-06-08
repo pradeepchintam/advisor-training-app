@@ -124,36 +124,98 @@ function ClientAvatar({
  * chunk is already decodable) and avoids the mp3 frame-boundary buffering
  * stutter that <audio> introduces.
  */
+/**
+ * Lazily-created, SESSION-SHARED AudioContext. Chrome hard-limits a page to
+ * ~6 concurrent AudioContexts — creating one per sentence (as the old code
+ * did) hits that cap after a few replies and `new AudioContext()` then
+ * THROWS, which got swallowed and surfaced as silent "streaming
+ * unavailable". One context for the whole session sidesteps that entirely.
+ */
+let _sharedAudioCtx: AudioContext | null = null;
+function getSharedAudioContext(): AudioContext {
+  if (!_sharedAudioCtx || _sharedAudioCtx.state === 'closed') {
+    // Don't force a sampleRate — Chrome may refuse or silently override.
+    _sharedAudioCtx = new AudioContext();
+  }
+  if (_sharedAudioCtx.state === 'suspended') {
+    _sharedAudioCtx.resume().catch((e) => {
+      console.warn('[tts] AudioContext.resume() rejected — audio may not play:', e);
+    });
+  }
+  return _sharedAudioCtx;
+}
+
 class StreamingPCMPlayer {
   private ctx: AudioContext;
+  private sourceSampleRate: number;
   private nextStartTime: number = 0;
   private active: boolean = true;
   private scheduledNodes: AudioBufferSourceNode[] = [];
+  // Carry-over for a single trailing byte when a chunk ends mid-sample.
+  // Without this, an odd-length chunk drops half a sample and byte-shifts
+  // every subsequent sample → continuous static/noise.
+  private leftover: Uint8Array | null = null;
 
   constructor(sampleRate: number) {
-    this.ctx = new AudioContext({ sampleRate });
+    // Track the PCM source rate (24000) separately from the context's actual
+    // rate (often 48000). createBuffer must use the SOURCE rate or the audio
+    // plays at the wrong speed. Reuse the session-shared context so we never
+    // hit Chrome's ~6-AudioContext-per-page ceiling.
+    this.sourceSampleRate = sampleRate;
+    this.ctx = getSharedAudioContext();
+    console.debug(
+      '[tts] player ctx state=%s ctxRate=%d sourceRate=%d',
+      this.ctx.state, this.ctx.sampleRate, this.sourceSampleRate,
+    );
   }
 
   /** Push a chunk of raw linear16 PCM bytes onto the playback timeline. */
   push(pcm: Uint8Array): void {
     if (!this.active || pcm.byteLength === 0) return;
-    // Copy into a properly-aligned Int16Array. Slice on the underlying
-    // buffer in case the Uint8Array isn't 2-byte aligned (it always is in
-    // practice, but defensive).
-    const aligned = pcm.byteOffset % 2 === 0
-      ? new Int16Array(pcm.buffer, pcm.byteOffset, pcm.byteLength >>> 1)
-      : new Int16Array(pcm.slice().buffer);
-    const float32 = new Float32Array(aligned.length);
-    for (let i = 0; i < aligned.length; i++) {
-      float32[i] = aligned[i] / 32768;
+    if (this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => { /* logged in getSharedAudioContext */ });
     }
-    const buffer = this.ctx.createBuffer(1, float32.length, this.ctx.sampleRate);
+
+    // --- Re-align samples across chunk boundaries ---------------------
+    // The fetch reader hands us arbitrary byte counts. A 16-bit sample is
+    // 2 bytes, so a chunk can end mid-sample. Prepend any leftover byte
+    // from the previous chunk, decode only whole samples, and stash any
+    // new trailing odd byte for next time. (Dropping it instead — the old
+    // behavior — shifts all later samples by a byte and produces static.)
+    let bytes = pcm;
+    if (this.leftover && this.leftover.byteLength > 0) {
+      const merged = new Uint8Array(this.leftover.byteLength + pcm.byteLength);
+      merged.set(this.leftover, 0);
+      merged.set(pcm, this.leftover.byteLength);
+      bytes = merged;
+      this.leftover = null;
+    }
+    const usableSamples = bytes.byteLength >>> 1;
+    const usableBytes = usableSamples * 2;
+    if (usableBytes < bytes.byteLength) {
+      this.leftover = bytes.slice(usableBytes); // 1 trailing byte
+    }
+    if (usableSamples === 0) return;
+
+    // Decode via DataView with explicit little-endian — avoids any
+    // ArrayBuffer alignment pitfalls from the merged/sliced views.
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, usableBytes);
+    const float32 = new Float32Array(usableSamples);
+    for (let i = 0; i < usableSamples; i++) {
+      float32[i] = dv.getInt16(i * 2, true) / 32768;
+    }
+
+    // createBuffer's third arg is the SOURCE rate of the data (24000), not
+    // the playback rate — WebAudio resamples to the context's rate on output.
+    const buffer = this.ctx.createBuffer(1, float32.length, this.sourceSampleRate);
     buffer.copyToChannel(float32, 0);
     const source = this.ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(this.ctx.destination);
-    // Tiny lead time on the very first chunk so AudioContext fully unsuspends.
-    const startTime = Math.max(this.ctx.currentTime + 0.02, this.nextStartTime);
+    // Schedule gaplessly after the previous chunk. The 0.05s floor only
+    // applies to the very first chunk (and any underrun recovery) to give
+    // the context a moment to start without clipping the leading audio.
+    const startTime = Math.max(this.ctx.currentTime + 0.05, this.nextStartTime);
     source.start(startTime);
     this.scheduledNodes.push(source);
     this.nextStartTime = startTime + buffer.duration;
@@ -165,7 +227,6 @@ class StreamingPCMPlayer {
     if (remaining <= 0) return Promise.resolve();
     return new Promise((resolve) => {
       const t = setTimeout(() => resolve(), Math.max(0, remaining * 1000));
-      // Aborting the player resolves immediately via the active flag check.
       const poll = setInterval(() => {
         if (!this.active) {
           clearTimeout(t);
@@ -176,18 +237,27 @@ class StreamingPCMPlayer {
     });
   }
 
-  /** Stop playback immediately (barge-in). All scheduled sources are
-   *  cancelled and the AudioContext is closed. */
+  /** Stop this player's scheduled audio immediately (barge-in). Does NOT
+   *  close the shared context — that's reused for the next sentence and
+   *  torn down once on session unmount via closeSharedAudioContext(). */
   async stop(): Promise<void> {
     this.active = false;
     for (const node of this.scheduledNodes) {
       try { node.stop(); } catch { /* may have already ended */ }
+      try { node.disconnect(); } catch { /* ignored */ }
     }
     this.scheduledNodes = [];
-    try { await this.ctx.close(); } catch { /* already closed */ }
   }
 
   isActive(): boolean { return this.active; }
+}
+
+/** Close + free the session-shared AudioContext. Call on session unmount. */
+async function closeSharedAudioContext(): Promise<void> {
+  if (_sharedAudioCtx && _sharedAudioCtx.state !== 'closed') {
+    try { await _sharedAudioCtx.close(); } catch { /* already closed */ }
+  }
+  _sharedAudioCtx = null;
 }
 
 export default function Session() {
@@ -391,6 +461,8 @@ export default function Session() {
         audioContextRef.current = null;
       }
       stopAudio();
+      // Tear down the session-shared TTS playback context.
+      void closeSharedAudioContext();
     };
   }, [stopAudio]);
 
@@ -481,25 +553,26 @@ export default function Session() {
         );
         const abort = new AbortController();
         streamingAbortRef.current = abort;
-        let player: StreamingPCMPlayer | null = null;
+        const player = new StreamingPCMPlayer(24000);
+        streamingPlayerRef.current = player;
+        let chunkCount = 0;
         const meta = await ttsApi.streamPCM(
           text, gender, ageGroup,
           (chunk) => {
             if (abort.signal.aborted) return;
-            if (!player) {
-              player = new StreamingPCMPlayer(meta?.sampleRate ?? 24000);
-              streamingPlayerRef.current = player;
-            }
+            chunkCount += 1;
             player.push(chunk);
           },
           abort.signal,
         );
-        if (meta && player) {
-          await (player as StreamingPCMPlayer).drain();
-          if (streamingPlayerRef.current === player) {
-            await (player as StreamingPCMPlayer).stop();
-            streamingPlayerRef.current = null;
-          }
+        if (meta && chunkCount > 0) {
+          await player.drain();
+        } else if (!abort.signal.aborted) {
+          console.warn('[tts] speak(): no audio — meta=%o chunks=%d', meta, chunkCount);
+        }
+        if (streamingPlayerRef.current === player) {
+          await player.stop();
+          streamingPlayerRef.current = null;
         }
         if (streamingAbortRef.current === abort) streamingAbortRef.current = null;
         setSessionStatus('ready');
@@ -566,27 +639,34 @@ export default function Session() {
       const abort = new AbortController();
       streamingAbortRef.current = abort;
       try {
-        let player: StreamingPCMPlayer | null = null;
+        // Construct the player UP FRONT (not lazily inside onChunk) so any
+        // AudioContext failure surfaces here with its real message instead
+        // of being swallowed by streamPCM's read-loop catch.
+        const player = new StreamingPCMPlayer(24000);
+        streamingPlayerRef.current = player;
+        let chunkCount = 0;
         const meta = await ttsApi.streamPCM(
           next, gender, ageGroup,
           (chunk) => {
             if (abort.signal.aborted) return;
-            if (!player) {
-              player = new StreamingPCMPlayer(meta?.sampleRate ?? 24000);
-              streamingPlayerRef.current = player;
-            }
+            chunkCount += 1;
             player.push(chunk);
           },
           abort.signal,
         );
-        if (meta && player) {
-          await (player as StreamingPCMPlayer).drain();
+        if (meta && chunkCount > 0) {
+          await player.drain();
           if (streamingPlayerRef.current === player) {
-            await (player as StreamingPCMPlayer).stop();
+            await player.stop();
             streamingPlayerRef.current = null;
           }
         } else if (!abort.signal.aborted) {
-          console.warn('[tts] streaming unavailable — sentence skipped');
+          console.warn(
+            '[tts] no audio — meta=%o chunks=%d (200+bytes expected). Sentence skipped.',
+            meta, chunkCount,
+          );
+          await player.stop();
+          if (streamingPlayerRef.current === player) streamingPlayerRef.current = null;
         }
       } catch (err) {
         if (!abort.signal.aborted) {
