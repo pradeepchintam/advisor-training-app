@@ -509,14 +509,8 @@ async def create_session(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="This assignment was cancelled by the admin",
             )
-        # Cannot start a session before its scheduled date.
-        from datetime import date as _date
-        if assignment.target_date > _date.today():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"This session is scheduled for {assignment.target_date.isoformat()} "
-                       f"and can't be started before then.",
-            )
+        # No date gating — advisors may start any assigned session (today or
+        # upcoming) on demand. Target dates are no longer shown or enforced.
 
         p_result = await db.execute(
             select(SessionProfile).where(SessionProfile.id == assignment.profile_id)

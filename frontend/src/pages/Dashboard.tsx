@@ -44,25 +44,6 @@ function formatDuration(start: string, end: string | null) {
   return `${mins}m`;
 }
 
-function todayIso(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function StatusPill({ status }: { status: Assignment['status'] }) {
-  const map: Record<string, string> = {
-    pending: 'bg-blue-900/40 text-blue-300',
-    in_progress: 'bg-yellow-900/40 text-yellow-300',
-    completed: 'bg-green-900/40 text-green-300',
-    cancelled: 'bg-navy-700 text-slate-400',
-  };
-  return (
-    <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${map[status] ?? 'bg-navy-700 text-slate-400'}`}>
-      {status.replace('_', ' ')}
-    </span>
-  );
-}
-
 /**
  * Tabular list of assignments.
  *  - `startable` table (today/overdue) shows a Start button.
@@ -107,12 +88,8 @@ function ClientPortrait({
 
 function AssignmentTable({
   assignments,
-  startable,
-  today,
 }: {
   assignments: Assignment[];
-  startable: boolean;
-  today: string;
 }) {
   return (
     <div className="bg-navy-800 border border-navy-700 rounded-xl overflow-hidden">
@@ -121,65 +98,43 @@ function AssignmentTable({
           <tr className="text-left text-xs text-slate-500 uppercase tracking-wider border-b border-navy-700">
             <th className="px-5 py-3 font-medium">Appointment</th>
             <th className="px-4 py-3 font-medium">Client</th>
-            <th className="px-4 py-3 font-medium">{startable ? 'Due' : 'Scheduled'}</th>
-            <th className="px-4 py-3 font-medium">Status</th>
-            <th className="px-4 py-3 font-medium text-right">{startable ? 'Action' : ''}</th>
+            <th className="px-4 py-3 font-medium text-right">Action</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-navy-700">
-          {assignments.map((a) => {
-            const overdue = startable && a.target_date < today;
-            // Defensive: never allow starting a session before its scheduled date.
-            const canStart = startable && a.target_date <= today;
-            return (
-              <tr key={a.id} className="hover:bg-navy-700/40 transition-colors">
-                <td className="px-5 py-3">
-                  <div className="text-white font-medium">{a.profile_name}</div>
-                  <div className="text-slate-500 text-xs mt-0.5">
-                    {a.persona.age_group?.replace('_', ' ')} · {a.persona.financial_situation} · {a.persona.personality_type}
-                  </div>
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <ClientPortrait persona={a.persona} />
-                    <div className="min-w-0">
-                      <div className="text-slate-200 truncate">
-                        {a.persona.client_type === 'couple' && a.persona.spouse_name
-                          ? `${a.persona.name} & ${a.persona.spouse_name}`
-                          : a.persona.name || '—'}
-                      </div>
-                      <div className="text-slate-500 text-[11px] capitalize">
-                        {a.persona.gender}{' · '}{a.persona.age_group?.replace('_', ' ')}
-                      </div>
+          {assignments.map((a) => (
+            <tr key={a.id} className="hover:bg-navy-700/40 transition-colors">
+              <td className="px-5 py-3">
+                <div className="text-white font-medium">{a.profile_name}</div>
+                <div className="text-slate-500 text-xs mt-0.5">
+                  {a.persona.age_group?.replace('_', ' ')} · {a.persona.financial_situation} · {a.persona.personality_type}
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <ClientPortrait persona={a.persona} />
+                  <div className="min-w-0">
+                    <div className="text-slate-200 truncate">
+                      {a.persona.client_type === 'couple' && a.persona.spouse_name
+                        ? `${a.persona.name} & ${a.persona.spouse_name}`
+                        : a.persona.name || '—'}
+                    </div>
+                    <div className="text-slate-500 text-[11px] capitalize">
+                      {a.persona.gender}{' · '}{a.persona.age_group?.replace('_', ' ')}
                     </div>
                   </div>
-                </td>
-                <td className="px-4 py-3">
-                  <span className="text-slate-300">{a.target_date}</span>
-                  {overdue && (
-                    <span className="ml-2 inline-flex px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 text-[10px] uppercase tracking-wider font-semibold">
-                      Overdue
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-3"><StatusPill status={a.status} /></td>
-                <td className="px-4 py-3 text-right">
-                  {canStart ? (
-                    <Link
-                      to={`/sessions/start/${a.id}`}
-                      className="inline-flex items-center bg-gold-500 hover:bg-gold-400 text-navy-900 font-bold px-4 py-1.5 rounded-lg transition-colors text-xs"
-                    >
-                      Start →
-                    </Link>
-                  ) : (
-                    <span className="text-slate-500 text-xs italic">
-                      Available {a.target_date}
-                    </span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
+                </div>
+              </td>
+              <td className="px-4 py-3 text-right">
+                <Link
+                  to={`/sessions/start/${a.id}`}
+                  className="inline-flex items-center bg-gold-500 hover:bg-gold-400 text-navy-900 font-bold px-4 py-1.5 rounded-lg transition-colors text-xs"
+                >
+                  Start →
+                </Link>
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -215,8 +170,6 @@ export default function Dashboard() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const today = todayIso();
 
   const now = new Date();
   const thisMonthSessions = sessions.filter((s) => {
@@ -263,43 +216,42 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      {/* Assigned sessions — advisors only */}
-      {!isAdmin && myAssignments && (
-        <>
-          {/* Today's assignments — startable */}
+      {/* Assigned sessions — advisors only. One combined, startable list:
+          today + upcoming, no due dates shown, all immediately startable. */}
+      {!isAdmin && myAssignments && (() => {
+        // One combined list of everything the advisor can still do: today +
+        // upcoming + any earlier-dated assignments they haven't finished.
+        // Dates aren't shown or enforced, so all of these are startable.
+        // De-dupe by id in case buckets overlap.
+        const seen = new Set<string>();
+        const all = [
+          ...myAssignments.today,
+          ...myAssignments.upcoming,
+          ...myAssignments.past,
+        ].filter((a) => {
+          if (a.status === 'completed' || a.status === 'cancelled') return false;
+          if (seen.has(a.id)) return false;
+          seen.add(a.id);
+          return true;
+        });
+        return (
           <div className="mb-8">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-semibold text-white">Today's Assigned Sessions</h2>
+              <h2 className="text-lg font-semibold text-white">Your Assigned Sessions</h2>
               <span className="text-xs text-slate-500">
-                {myAssignments.today.length} {myAssignments.today.length === 1 ? 'session' : 'sessions'}
+                {all.length} {all.length === 1 ? 'session' : 'sessions'}
               </span>
             </div>
-            {myAssignments.today.length === 0 ? (
+            {all.length === 0 ? (
               <div className="bg-navy-800 border border-navy-700 rounded-xl px-5 py-6 text-center text-slate-500 text-sm">
-                Nothing due today. Nice — you're caught up.
+                No assigned sessions right now. Nice — you're caught up.
               </div>
             ) : (
-              <AssignmentTable assignments={myAssignments.today} startable today={today} />
+              <AssignmentTable assignments={all} />
             )}
           </div>
-
-          {/* Upcoming assignments — NOT startable until their scheduled date */}
-          {myAssignments.upcoming.length > 0 && (
-            <div className="mb-8">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-lg font-semibold text-white">Upcoming Sessions</h2>
-                <span className="text-xs text-slate-500">
-                  {myAssignments.upcoming.length} scheduled
-                </span>
-              </div>
-              <AssignmentTable assignments={myAssignments.upcoming} startable={false} today={today} />
-              <p className="text-slate-500 text-xs mt-2">
-                Upcoming sessions become available to start on their scheduled date.
-              </p>
-            </div>
-          )}
-        </>
-      )}
+        );
+      })()}
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4 mb-8">

@@ -195,9 +195,10 @@ export default function StartAssignment() {
         </label>
 
         {(() => {
-          const todayStr = new Date().toISOString().slice(0, 10);
-          const isFuture = assignment.target_date > todayStr;
-          const blocked = isFuture || assignment.status === 'cancelled' || assignment.status === 'completed';
+          // No date gating — advisors can start any assigned session
+          // (today or upcoming) on demand. Only cancelled assignments are
+          // blocked.
+          const blocked = assignment.status === 'cancelled';
           return (
             <>
               <button
@@ -207,14 +208,9 @@ export default function StartAssignment() {
               >
                 {starting ? 'Starting session…' : engageClient ? 'Start Interactive Session' : 'Start Practice Walkthrough'}
               </button>
-              {isFuture && (
+              {assignment.status === 'cancelled' && (
                 <p className="text-center text-slate-500 text-xs mt-3">
-                  This session is scheduled for {assignment.target_date} and can't be started before then.
-                </p>
-              )}
-              {(assignment.status === 'cancelled' || assignment.status === 'completed') && (
-                <p className="text-center text-slate-500 text-xs mt-3">
-                  This assignment is {assignment.status}.
+                  This assignment was cancelled by your admin.
                 </p>
               )}
             </>
