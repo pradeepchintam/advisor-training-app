@@ -822,10 +822,10 @@ export default function Session() {
     if (!id || !token) return;
     let cancelled = false;
     let ws: WebSocket | null = null;
+    let reconnectAttempts = 0;
+    const MAX_RECONNECTS = 3;
 
-    const timer = setTimeout(() => {
-      if (cancelled) return;
-
+    const connect = () => {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${wsProtocol}//${window.location.host}/ws/session/${id}?token=${token}`;
       ws = new WebSocket(wsUrl);
@@ -833,6 +833,11 @@ export default function Session() {
 
       ws.onopen = () => {
         if (cancelled) { ws?.close(); return; }
+        if (reconnectAttempts > 0) {
+          // We just recovered from a drop — let the advisor know.
+          toast.success('Reconnected.');
+        }
+        reconnectAttempts = 0;
         setSessionStatus('ready');
         startRecording();
       };
@@ -846,6 +851,11 @@ export default function Session() {
             timestamp?: string;
             speaker?: 'primary' | 'spouse';
           };
+          // Server keepalive — backend sends this every ~25s to defeat
+          // intermediate proxy idle timeouts. Nothing to do; the very
+          // act of receiving it counts as the browser confirming the
+          // socket is alive.
+          if (data.type === 'ping') return;
           if (data.type === 'transcript_partial' && data.text) {
             // Live interim transcript from AWS Transcribe. Show as the
             // advisor's in-progress speech (same slot as Web Speech interim).
@@ -926,10 +936,37 @@ export default function Session() {
         );
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         if (cancelled || endingRef.current) return;
+        // Unexpected close — try to reconnect a few times before giving
+        // up. This recovers from idle-timeout drops at intermediate
+        // proxies, transient network blips, and AWS Transcribe hiccups.
+        // The session row stays in `active` if the backend's WS handler
+        // sees the close as a clean WebSocketDisconnect (the keepalive
+        // ping reduces these), so reconnecting picks up where we left off.
+        if (reconnectAttempts < MAX_RECONNECTS) {
+          reconnectAttempts += 1;
+          const delay = Math.min(2000 * reconnectAttempts, 5000);
+          console.warn(
+            `[ws] closed (code=${ev.code} reason=${ev.reason || '-'}); ` +
+            `reconnect attempt ${reconnectAttempts}/${MAX_RECONNECTS} in ${delay}ms`,
+          );
+          toast.warning(`Connection dropped — reconnecting…`);
+          setSessionStatus('connecting');
+          setTimeout(() => {
+            if (!cancelled && !endingRef.current) connect();
+          }, delay);
+          return;
+        }
+        console.error(`[ws] gave up reconnecting after ${MAX_RECONNECTS} attempts`);
         setSessionStatus('error');
+        toast.error('Lost connection to the session. Please refresh.');
       };
+    };
+
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      connect();
     }, 50);
 
     return () => {

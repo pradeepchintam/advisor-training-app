@@ -290,6 +290,26 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                             pass
                     claude_task["task"] = _asyncio.create_task(handle_advisor_message(ev.text))
 
+        async def keepalive_loop() -> None:
+            """Send a JSON ping every 25s so intermediate proxies don't
+            close the WebSocket as idle. The frontend ignores `type=ping`
+            messages — they're purely there to keep the connection alive.
+
+            Without this, sessions were observed dropping at ~5 minutes,
+            consistent with some proxy/AWS NAT idle timeout (300s).
+            """
+            while True:
+                try:
+                    await _asyncio.sleep(25)
+                    await safe_send_json({"type": "ping"})
+                except _asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Connection probably already dead; exit silently.
+                    return
+
+        ping_task = _asyncio.create_task(keepalive_loop())
+
         try:
             while True:
                 evt = await websocket.receive()
@@ -385,7 +405,18 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                     await safe_send_json({"type": "auto_interrupt"})
                     continue
 
-        except WebSocketDisconnect:
+        except WebSocketDisconnect as e:
+            # Log the disconnect cause so future "session stopped at X
+            # minutes" reports can be diagnosed. WebSocketDisconnect.code
+            # tells us if it was a clean close (1000), going-away (1001),
+            # protocol error (1002), abnormal close (1006), etc.
+            import logging as _logging
+            _logger = _logging.getLogger("trajan.ws")
+            elapsed = (datetime.now(timezone.utc) - session.started_at).total_seconds() if session.started_at else 0
+            _logger.warning(
+                "WS disconnected session=%s after %.1fs code=%s reason=%r",
+                session.id, elapsed, getattr(e, "code", "?"), getattr(e, "reason", ""),
+            )
             # Mark session as completed on disconnect if still active
             if session.status == "active":
                 session.status = "completed"
@@ -393,7 +424,30 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                 session.conversation = conversation
                 session.slide_events = slide_events
                 await db.commit()
+        except Exception as e:  # noqa: BLE001
+            # Catch-all so the cleanup in `finally` still runs. Without
+            # this, an unhandled exception from inside the receive() loop
+            # propagates up and the session is left in active=true forever.
+            import logging as _logging
+            _logger = _logging.getLogger("trajan.ws")
+            elapsed = (datetime.now(timezone.utc) - session.started_at).total_seconds() if session.started_at else 0
+            _logger.exception(
+                "WS unexpected error session=%s after %.1fs: %s",
+                session.id, elapsed, e,
+            )
+            if session.status == "active":
+                session.status = "completed"
+                session.ended_at = datetime.now(timezone.utc)
+                session.conversation = conversation
+                session.slide_events = slide_events
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
         finally:
+            # Stop the keepalive ping task.
+            if "ping_task" in locals() and ping_task and not ping_task.done():
+                ping_task.cancel()
             # Clean up live tasks so they don't leak.
             cur = claude_task["task"]
             if cur and not cur.done():
