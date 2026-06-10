@@ -157,21 +157,15 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
             await persist()
 
         # --- Nova -> client pump ---
-        _pump_audio_count = 0
-
         async def pump() -> None:
-            nonlocal _pump_audio_count
             try:
                 async for ev in nova_sess.events():
                     if stop.is_set():
                         break
                     if ev.type == "audio":
-                        _pump_audio_count += 1
-                        if _pump_audio_count <= 3 or _pump_audio_count % 50 == 0:
-                            logger.info("Nova pump sending audio frame #%d len=%d", _pump_audio_count, len(ev.audio))
                         await safe_send_bytes(ev.audio)
                     elif ev.type == "error":
-                        logger.info("Nova pump error event: %s", ev.text)
+                        logger.warning("Nova error: %s", ev.text)
                         await safe_send_json({"type": "error", "message": ev.text})
                     elif ev.type == "user_transcript":
                         if ev.text.strip():
