@@ -28,6 +28,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:password@db:5432/trajan_training
       SECRET_KEY: ${SECRET_KEY:-change-this-secret-key-in-production-min-32-chars}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
       RECORDINGS_DIR: /app/recordings
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@trajanwealth.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-TempAdmin123!}
