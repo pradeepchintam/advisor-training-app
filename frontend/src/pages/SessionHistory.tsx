@@ -77,12 +77,15 @@ export default function SessionHistory() {
             {isAdmin ? 'All advisor training sessions' : 'Your training sessions'}
           </p>
         </div>
-        <Link
-          to="/sessions/new"
-          className="inline-flex items-center gap-2 bg-gold-500 hover:bg-gold-400 text-navy-900 font-bold px-4 py-2 rounded-lg text-sm transition-colors"
-        >
-          + New Session
-        </Link>
+        {/* Self-initiated "New Session" is an admin/testing tool; hidden from advisors. */}
+        {isAdmin && (
+          <Link
+            to="/sessions/new"
+            className="inline-flex items-center gap-2 bg-gold-500 hover:bg-gold-400 text-navy-900 font-bold px-4 py-2 rounded-lg text-sm transition-colors"
+          >
+            + New Session
+          </Link>
+        )}
       </div>
 
       {/* Filters */}

@@ -205,15 +205,19 @@ export default function Dashboard() {
             {isAdmin ? 'Admin Dashboard · All advisor activity' : 'Your training overview'}
           </p>
         </div>
-        <Link
-          to="/sessions/new"
-          className="inline-flex items-center gap-2 bg-navy-700 hover:bg-navy-600 text-slate-200 font-bold px-5 py-2.5 rounded-lg transition-colors border border-navy-600"
-        >
-          <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-            <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-          </svg>
-          Start Additional Session
-        </Link>
+        {/* Self-initiated sessions are an admin/testing tool — advisors only
+            run assigned sessions, so this is hidden from them. */}
+        {isAdmin && (
+          <Link
+            to="/sessions/new"
+            className="inline-flex items-center gap-2 bg-navy-700 hover:bg-navy-600 text-slate-200 font-bold px-5 py-2.5 rounded-lg transition-colors border border-navy-600"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+              <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+            </svg>
+            Start Additional Session
+          </Link>
+        )}
       </div>
 
       {/* Assigned sessions — advisors only. One combined, startable list:
@@ -287,12 +291,18 @@ export default function Dashboard() {
         ) : recentSessions.length === 0 ? (
           <div className="text-center py-16">
             <div className="text-slate-500 mb-4">No sessions yet</div>
-            <Link
-              to="/sessions/new"
-              className="inline-flex items-center gap-2 bg-gold-500 hover:bg-gold-400 text-navy-900 font-bold px-4 py-2 rounded-lg text-sm transition-colors"
-            >
-              Start your first session
-            </Link>
+            {isAdmin ? (
+              <Link
+                to="/sessions/new"
+                className="inline-flex items-center gap-2 bg-gold-500 hover:bg-gold-400 text-navy-900 font-bold px-4 py-2 rounded-lg text-sm transition-colors"
+              >
+                Start your first session
+              </Link>
+            ) : (
+              <div className="text-slate-600 text-sm">
+                Start one of your assigned sessions above to begin.
+              </div>
+            )}
           </div>
         ) : (
           <table className="w-full">

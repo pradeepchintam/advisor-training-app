@@ -23,6 +23,7 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -189,7 +190,14 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
                 if evt.get("bytes") is not None:
                     await nova_sess.send_audio(evt["bytes"])
                 elif evt.get("text") is not None:
-                    if '"end_session"' in evt["text"] or '"end"' in evt["text"]:
+                    # Only an explicit end control message ends the session.
+                    # Other control messages (e.g. advisor_slide_change) are
+                    # ignored here — they don't affect the Nova audio stream.
+                    try:
+                        ctrl = json.loads(evt["text"])
+                    except Exception:
+                        ctrl = {}
+                    if ctrl.get("type") in ("end_session", "end"):
                         break
         except WebSocketDisconnect:
             pass

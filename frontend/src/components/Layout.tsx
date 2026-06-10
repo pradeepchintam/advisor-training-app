@@ -20,14 +20,6 @@ const DashboardIcon = () => (
   </NavIcon>
 );
 
-const PlusIcon = () => (
-  <NavIcon>
-    <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-      <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-    </svg>
-  </NavIcon>
-);
-
 const ListIcon = () => (
   <NavIcon>
     <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
@@ -75,9 +67,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
+  // Advisors run assigned sessions only — self-initiated "New Session" is
+  // hidden from the advisor nav (and the dashboard / history entry points).
   const advisorNav: NavItem[] = [
     { to: '/dashboard', label: 'Dashboard', icon: <DashboardIcon /> },
-    { to: '/sessions/new', label: 'New Session', icon: <PlusIcon /> },
     { to: '/sessions', label: 'Session History', icon: <ListIcon /> },
   ];
 
@@ -194,34 +187,34 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           )}
         </nav>
 
-        {/* User info */}
-        <div className="border-t border-navy-700 p-3">
-          <div className="flex items-center gap-2">
+      </aside>
+
+      {/* Main content — with a top bar carrying the user profile + an
+          explicit Log out button in the top-right corner. */}
+      <main className="flex-1 flex flex-col bg-navy-800 overflow-hidden">
+        <header className="flex items-center justify-end gap-4 px-6 py-2.5 border-b border-navy-700 bg-navy-900 flex-shrink-0">
+          <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-full bg-navy-700 flex items-center justify-center text-gold-400 font-semibold text-xs flex-shrink-0">
               {initials}
             </div>
-            {!sidebarCollapsed && (
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-white font-medium truncate">{user?.name}</div>
-                <div className="text-xs text-slate-500 truncate capitalize">{user?.role}</div>
-              </div>
-            )}
-            <button
-              onClick={handleLogout}
-              title="Logout"
-              className="flex-shrink-0 text-slate-500 hover:text-red-400 transition-colors p-1 rounded"
-            >
-              <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-                <path fillRule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 102 0V4a1 1 0 00-1-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z" clipRule="evenodd" />
-              </svg>
-            </button>
+            <div className="text-right leading-tight">
+              <div className="text-sm text-white font-medium">{user?.name}</div>
+              <div className="text-xs text-slate-500 capitalize">{user?.role}</div>
+            </div>
           </div>
+          <button
+            onClick={handleLogout}
+            className="inline-flex items-center gap-2 bg-navy-700 hover:bg-red-600 border border-navy-600 hover:border-red-500 text-slate-200 hover:text-white text-sm font-semibold px-3.5 py-1.5 rounded-lg transition-colors"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+              <path fillRule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 102 0V4a1 1 0 00-1-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z" clipRule="evenodd" />
+            </svg>
+            Log out
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto">
+          {children}
         </div>
-      </aside>
-
-      {/* Main content */}
-      <main className="flex-1 bg-navy-800 overflow-y-auto">
-        {children}
       </main>
     </div>
   );

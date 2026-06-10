@@ -21,10 +21,7 @@ export default function StartAssignment() {
   const [error, setError] = useState<string | null>(null);
   // Default unchecked → one-sided deck-walkthrough practice (client silent).
   const [engageClient, setEngageClient] = useState(false);
-  // Live-voice engine. Nova Sonic is native speech-to-speech (always interactive).
-  const [voiceMode, setVoiceMode] = useState<'standard' | 'nova_sonic'>('standard');
   const startedRef = useRef(false);
-  const isNova = voiceMode === 'nova_sonic';
 
   useEffect(() => {
     if (!assignmentId) return;
@@ -51,8 +48,10 @@ export default function StartAssignment() {
     startedRef.current = true;
     setStarting(true);
     try {
+      // Engaging the client uses Nova Sonic (native voice-to-voice); a
+      // one-sided walkthrough uses the standard cascade with a silent client.
       const session = await sessionsApi.createFromAssignment(
-        assignmentId, isNova ? true : engageClient, voiceMode,
+        assignmentId, engageClient, engageClient ? 'nova_sonic' : 'standard',
       );
       toast.success('Session created. Connecting…');
       navigate(`/sessions/${session.id}`);
@@ -179,38 +178,10 @@ export default function StartAssignment() {
           </div>
         )}
 
-        {/* Live voice engine: Standard cascade vs Nova Sonic native S2S. */}
-        <div className="mb-4 p-3 rounded-lg border border-navy-700 bg-navy-900">
-          <span className="text-sm font-medium text-white">Live voice engine</span>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => setVoiceMode('standard')}
-              className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
-                !isNova ? 'border-gold-500 bg-navy-800 text-white' : 'border-navy-700 text-slate-400 hover:border-navy-600'
-              }`}
-            >
-              <span className="block font-medium">Standard</span>
-              <span className="block opacity-70 mt-0.5">Claude + ElevenLabs. Supports one-sided practice & distinct couple voices.</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setVoiceMode('nova_sonic')}
-              className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
-                isNova ? 'border-gold-500 bg-navy-800 text-white' : 'border-navy-700 text-slate-400 hover:border-navy-600'
-              }`}
-            >
-              <span className="block font-medium">Nova Sonic <span className="opacity-60">(beta)</span></span>
-              <span className="block opacity-70 mt-0.5">Native voice-to-voice, lower latency. Always interactive; one shared voice.</span>
-            </button>
-          </div>
-        </div>
-
         {/* Engage Client toggle. Default OFF = one-sided deck walkthrough;
             the advisor practices presenting and is still scored, but the
-            client never speaks. Turn ON for an interactive client. Hidden for
-            Nova Sonic, which is always interactive. */}
-        {!isNova && (
+            client never speaks. Turn ON for an interactive client — which
+            uses Nova Sonic (native voice-to-voice) automatically. */}
         <label className="flex items-start gap-3 mb-4 p-3 rounded-lg border border-navy-700 bg-navy-900 cursor-pointer hover:border-navy-600 transition-colors">
           <input
             type="checkbox"
@@ -222,12 +193,11 @@ export default function StartAssignment() {
             <span className="text-sm font-medium text-white">Engage Client</span>
             <span className="block text-xs text-slate-500 mt-0.5">
               {engageClient
-                ? 'The client will respond interactively — a full two-way roleplay.'
+                ? 'The client responds interactively in a natural voice — a full two-way roleplay.'
                 : 'Off: a one-sided practice run. You present the deck; the client stays silent. Your delivery is still recorded and scored.'}
             </span>
           </span>
         </label>
-        )}
 
         {(() => {
           // No date gating — advisors can start any assigned session
@@ -241,7 +211,7 @@ export default function StartAssignment() {
                 disabled={starting || blocked}
                 className="w-full bg-gold-500 hover:bg-gold-400 disabled:opacity-60 disabled:cursor-not-allowed text-navy-900 font-bold py-3 rounded-lg transition-colors shadow-lg shadow-gold-500/20"
               >
-                {starting ? 'Starting session…' : (engageClient || isNova) ? 'Start Interactive Session' : 'Start Practice Walkthrough'}
+                {starting ? 'Starting session…' : engageClient ? 'Start Interactive Session' : 'Start Practice Walkthrough'}
               </button>
               {assignment.status === 'cancelled' && (
                 <p className="text-center text-slate-500 text-xs mt-3">

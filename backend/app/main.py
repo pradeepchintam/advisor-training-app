@@ -446,10 +446,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                 "WS disconnected session=%s after %.1fs code=%s reason=%r",
                 session.id, elapsed, getattr(e, "code", "?"), getattr(e, "reason", ""),
             )
-            # Mark session as completed on disconnect if still active
+            # Persist progress but DO NOT end the session. A dropped socket
+            # (idle timeout, proxy cutoff, network blip, tab backgrounded,
+            # slide navigation hiccup) must stay RESUMABLE — the frontend
+            # reconnects and continues. Only an explicit End or Discard by the
+            # advisor ends a session. (Previously this auto-completed on
+            # disconnect, so reconnect hit "Session is already completed".)
             if session.status == "active":
-                session.status = "completed"
-                session.ended_at = datetime.now(timezone.utc)
                 session.conversation = conversation
                 session.slide_events = slide_events
                 await db.commit()
@@ -464,9 +467,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
                 "WS unexpected error session=%s after %.1fs: %s",
                 session.id, elapsed, e,
             )
+            # Same policy on an unexpected error: keep the session resumable,
+            # just persist progress. Don't auto-complete it.
             if session.status == "active":
-                session.status = "completed"
-                session.ended_at = datetime.now(timezone.utc)
                 session.conversation = conversation
                 session.slide_events = slide_events
                 try:

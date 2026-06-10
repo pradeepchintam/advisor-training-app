@@ -22,21 +22,20 @@ export default function NewSession() {
   const [loading, setLoading] = useState(false);
   // Default unchecked → one-sided deck-walkthrough practice (client silent).
   const [engageClient, setEngageClient] = useState(false);
-  // Live-voice engine. Nova Sonic is native speech-to-speech (always interactive).
-  const [voiceMode, setVoiceMode] = useState<'standard' | 'nova_sonic'>('standard');
   const navigate = useNavigate();
   const toast = useToast();
 
   const isCouple = form.client_type === 'couple';
-  const isNova = voiceMode === 'nova_sonic';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
       const persona = buildPersonaPayload(form);
-      // Nova is inherently interactive, so it always engages the client.
-      const session = await sessionsApi.create(persona, isNova ? true : engageClient, voiceMode);
+      // Engaging the client uses Nova Sonic (native voice-to-voice) by default;
+      // a one-sided walkthrough uses the standard cascade with a silent client.
+      const voiceMode = engageClient ? 'nova_sonic' : 'standard';
+      const session = await sessionsApi.create(persona, engageClient, voiceMode);
       toast.success('Session created! Connecting...');
       navigate(`/sessions/${session.id}`);
     } catch (err: unknown) {
@@ -48,32 +47,6 @@ export default function NewSession() {
 
   const submitButton = (
     <div>
-      <div className="mb-4 p-3 rounded-lg border border-navy-700 bg-navy-900">
-        <span className="text-sm font-medium text-white">Live voice engine</span>
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={() => setVoiceMode('standard')}
-            className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
-              !isNova ? 'border-gold-500 bg-navy-800 text-white' : 'border-navy-700 text-slate-400 hover:border-navy-600'
-            }`}
-          >
-            <span className="block font-medium">Standard</span>
-            <span className="block opacity-70 mt-0.5">Claude + ElevenLabs. Supports one-sided practice & distinct couple voices.</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setVoiceMode('nova_sonic')}
-            className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
-              isNova ? 'border-gold-500 bg-navy-800 text-white' : 'border-navy-700 text-slate-400 hover:border-navy-600'
-            }`}
-          >
-            <span className="block font-medium">Nova Sonic <span className="opacity-60">(beta)</span></span>
-            <span className="block opacity-70 mt-0.5">Native voice-to-voice, lower latency. Always interactive; one shared voice.</span>
-          </button>
-        </div>
-      </div>
-      {!isNova && (
       <label className="flex items-start gap-3 mb-4 p-3 rounded-lg border border-navy-700 bg-navy-900 cursor-pointer hover:border-navy-600 transition-colors">
         <input
           type="checkbox"
@@ -85,12 +58,11 @@ export default function NewSession() {
           <span className="text-sm font-medium text-white">Engage Client</span>
           <span className="block text-xs text-slate-500 mt-0.5">
             {engageClient
-              ? 'The client will respond interactively — a full two-way roleplay.'
+              ? 'The client responds interactively in a natural voice — a full two-way roleplay.'
               : 'Off: a one-sided practice run. You present the deck; the client stays silent. Your delivery is still recorded and scored.'}
           </span>
         </span>
       </label>
-      )}
       <button
         type="submit"
         disabled={loading}
@@ -104,7 +76,7 @@ export default function NewSession() {
             </svg>
             Creating Session...
           </span>
-        ) : (engageClient || isNova) ? (
+        ) : engageClient ? (
           isCouple ? 'Generate Couple & Start Interactive Session' : 'Generate Client & Start Interactive Session'
         ) : (
           isCouple ? 'Generate Couple & Start Practice' : 'Generate Client & Start Practice'
