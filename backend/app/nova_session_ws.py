@@ -94,10 +94,13 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
 
         # --- open Nova ---
         primary_gender = getattr(persona, "gender", None)
-        nova_sess = nova.NovaSonicSession(
-            system_prompt=nova.build_nova_persona_prompt(persona),
-            voice_id=nova.pick_voice(primary_gender),
-        )
+        _system_prompt = nova.build_nova_persona_prompt(persona)
+        _voice_id = nova.pick_voice(primary_gender)
+
+        def _make_nova_sess() -> nova.NovaSonicSession:
+            return nova.NovaSonicSession(system_prompt=_system_prompt, voice_id=_voice_id)
+
+        nova_sess = _make_nova_sess()
         try:
             await nova_sess.start()
         except Exception as e:  # noqa: BLE001
@@ -106,10 +109,12 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
             await websocket.close(code=1011)
             return
 
+        # Mutable ref so the client loop always uses the current session after reconnects.
+        nova_ref: dict = {"session": nova_sess}
+
         send_lock = asyncio.Lock()
         persist_lock = asyncio.Lock()
         stop = asyncio.Event()
-        _mic_frame_count = 0
         # Accumulates assistant text for the current turn so we persist one
         # client message per turn (matching the cascade's behavior).
         assistant_buf = {"text": "", "started": False}
@@ -157,16 +162,19 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
             conversation.append({"role": "client", "text": text, "timestamp": ts})
             await persist()
 
-        # --- Nova -> client pump ---
-        async def pump() -> None:
+        async def _drain_events(sess: nova.NovaSonicSession) -> bool:
+            """Pump events from `sess`. Returns True if a reconnect should be attempted."""
             try:
-                async for ev in nova_sess.events():
+                async for ev in sess.events():
                     if stop.is_set():
-                        break
+                        return False
                     if ev.type == "audio":
                         await safe_send_bytes(ev.audio)
                     elif ev.type == "error":
                         logger.warning("Nova error: %s", ev.text)
+                        # Model timeout is recoverable — reconnect instead of surfacing to user.
+                        if "timed out" in ev.text.lower():
+                            return True
                         await safe_send_json({"type": "error", "message": ev.text})
                     elif ev.type == "user_transcript":
                         if ev.text.strip():
@@ -189,8 +197,32 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
             except WebSocketDisconnect:
                 stop.set()
             except Exception as e:  # noqa: BLE001
-                logger.info("nova session pump ended: %s", e)
-                stop.set()
+                logger.info("Nova pump ended: %s", e)
+            return False
+
+        # --- Nova -> client pump with automatic reconnection ---
+        async def pump() -> None:
+            while not stop.is_set():
+                sess = nova_ref["session"]
+                reconnect = await _drain_events(sess)
+                if not reconnect or stop.is_set():
+                    break
+                # Model timeout hit — start a fresh Nova session transparently.
+                logger.info("Nova session timed out; reconnecting")
+                try:
+                    await sess.close()
+                except Exception:
+                    pass
+                try:
+                    new_sess = _make_nova_sess()
+                    await new_sess.start()
+                    nova_ref["session"] = new_sess
+                    logger.info("Nova reconnected successfully")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Nova reconnect failed: %s", e)
+                    await safe_send_json({"type": "error", "message": "Client voice connection lost and could not reconnect."})
+                    stop.set()
+            stop.set()
 
         pump_task = asyncio.create_task(pump())
 
@@ -214,10 +246,7 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
                 if evt.get("type") == "websocket.disconnect":
                     break
                 if evt.get("bytes") is not None:
-                    _mic_frame_count += 1
-                    if _mic_frame_count <= 3 or _mic_frame_count % 100 == 0:
-                        print(f"Nova recv mic frame #{_mic_frame_count} len={len(evt['bytes'])}", flush=True)
-                    await nova_sess.send_audio(evt["bytes"])
+                    await nova_ref["session"].send_audio(evt["bytes"])
                 elif evt.get("text") is not None:
                     # Only an explicit end control message ends the session.
                     # Other control messages (e.g. advisor_slide_change) are
@@ -239,7 +268,7 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
                 await finalize_turn()
             except Exception:
                 pass
-            await nova_sess.close()
+            await nova_ref["session"].close()
             pump_task.cancel()
             ping_task.cancel()
             for t in (pump_task, ping_task):
