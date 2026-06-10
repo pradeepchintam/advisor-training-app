@@ -3,6 +3,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+logging.getLogger("trajan").setLevel(logging.DEBUG)
+logging.getLogger("trajan").addHandler(logging.StreamHandler())
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
