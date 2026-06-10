@@ -467,6 +467,8 @@ export default function Session() {
         const ctx = new AudioContext();
         captureCtx = ctx;
         await ctx.audioWorklet.addModule('/pcm-capture-worklet.js');
+        // Resume in case the AudioContext started suspended (Chrome autoplay policy).
+        if (ctx.state === 'suspended') await ctx.resume();
         const source = ctx.createMediaStreamSource(new MediaStream([track]));
         const node = new AudioWorkletNode(ctx, 'pcm-capture-worklet');
         node.port.onmessage = (e) => {
@@ -475,6 +477,13 @@ export default function Session() {
           try { sock.send(e.data as unknown as ArrayBufferView); } catch { /* closed */ }
         };
         source.connect(node);
+        // Connect through a muted gain to ctx.destination so the Web Audio
+        // pull model keeps the processing graph active. Without this the
+        // worklet's process() is never invoked on some browsers.
+        const sink = ctx.createGain();
+        sink.gain.value = 0;
+        node.connect(sink);
+        sink.connect(ctx.destination);
       } catch (err) {
         console.warn('Nova mic capture setup failed:', err);
       }
