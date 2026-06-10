@@ -282,13 +282,18 @@ def _s3_client_for_embed():
     return boto3.client("s3", **kwargs)
 
 
-def _pick_local_pptx(presentation_id: str) -> Path | None:
-    """Find the first .pptx file in the presentation's local dir."""
+def _local_pptx_files(presentation_id: str) -> list[Path]:
+    """All .pptx files in the presentation's local dir, in merge order."""
     pres_dir = presentation_dir(presentation_id)
     if not pres_dir.exists():
-        return None
-    pptx_files = sorted(pres_dir.glob("*.pptx"))
-    return pptx_files[0] if pptx_files else None
+        return []
+    return sorted(pres_dir.glob("*.pptx"))
+
+
+def _pick_local_pptx(presentation_id: str) -> Path | None:
+    """Find the first .pptx file in the presentation's local dir."""
+    files = _local_pptx_files(presentation_id)
+    return files[0] if files else None
 
 
 def ensure_pptx_in_s3(presentation_id: str) -> tuple[str, str] | None:
@@ -305,10 +310,14 @@ def ensure_pptx_in_s3(presentation_id: str) -> tuple[str, str] | None:
     key = _embed_key(presentation_id, local.name)
     client = _s3_client_for_embed()
 
-    # head_object: skip the upload if the file is already there.
+    # head_object: skip the upload only if the staged object matches the
+    # current local file SIZE. If they differ (e.g. the deck was recompressed
+    # in place), the staged copy is stale — fall through and re-upload. This
+    # is self-healing and doesn't require s3:DeleteObject.
     try:
-        client.head_object(Bucket=bucket, Key=key)
-        return bucket, key
+        head = client.head_object(Bucket=bucket, Key=key)
+        if head.get("ContentLength") == local.stat().st_size:
+            return bucket, key
     except Exception:
         pass  # not found / unreadable — upload below
 
@@ -338,19 +347,38 @@ def get_pptx_embed_url(presentation_id: str, ttl_seconds: int = 3600) -> str | N
     Returns a fully-formed iframe `src` URL of the form:
         https://view.officeapps.live.com/op/embed.aspx?src=<URL-encoded PPTX URL>
 
-    Returns None when staging fails (no bucket / no local file) so the caller
-    falls back to the static PNG path."""
+    Returns None (→ caller falls back to static PNGs) when:
+      * the bucket isn't configured or no local .pptx exists,
+      * the presentation has MORE THAN ONE .pptx (the embed can only render a
+        single file; multi-file decks are combined into one PNG set, so the
+        PNG path is the correct full view), or
+      * the deck exceeds ``PPTX_EMBED_MAX_BYTES`` — past the Office viewer's
+        size ceiling the iframe renders blank, so PNGs are safer.
+    """
     from urllib.parse import quote
 
-    # DISABLED: the public Office-Online viewer can't reliably render our decks
-    # — they're large (tens of MB), which exceeds the embed viewer's size limit,
-    # and the presigned src expires mid-session. The pre-rendered per-slide PNGs
-    # are reliable and always available, so we always fall back to them by
-    # returning None here. (Re-enable only with a small-deck size guard + a
-    # durable public URL if animated embeds are needed later.)
-    return None
+    # Guard 1: single-file only. A multi-file presentation (e.g. the 4-deck
+    # Annuity set) is merged into one PNG sequence; embedding would show only
+    # the first file, so fall back to the combined PNG view.
+    pptx_files = _local_pptx_files(presentation_id)
+    if len(pptx_files) != 1:
+        return None
 
-    staged = ensure_pptx_in_s3(presentation_id)  # noqa: unreachable — see above
+    # Guard 2: size. The public Office viewer renders blank past ~10 MB.
+    deck = pptx_files[0]
+    try:
+        size = deck.stat().st_size
+    except OSError:
+        return None
+    if size > settings.PPTX_EMBED_MAX_BYTES:
+        import logging
+        logging.getLogger("trajan.pptx").info(
+            "Deck %s is %d bytes (> %d limit); using PNG fallback (no embed).",
+            presentation_id, size, settings.PPTX_EMBED_MAX_BYTES,
+        )
+        return None
+
+    staged = ensure_pptx_in_s3(presentation_id)
     if staged is None:
         return None
     bucket, key = staged

@@ -884,6 +884,17 @@ export default function Session() {
                     title={presentation.title}
                     className="w-full h-full border-0"
                     allow="fullscreen"
+                    onError={() => {
+                      // Belt-and-suspenders: if the Office viewer fails to load
+                      // this deck, drop the embed and revert to the PNG view so
+                      // the advisor never sees a blank panel. (The backend size
+                      // guard is the primary defense; this catches the rest.)
+                      setEmbedUrls((prev) => {
+                        const next = { ...prev };
+                        delete next[presentation.id];
+                        return next;
+                      });
+                    }}
                   />
                 </div>
               ) : (

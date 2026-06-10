@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     # Number of evenly-spaced video frames to sample for vision analysis.
     VISION_FRAME_COUNT: int = 6
 
+    # --- PowerPoint Online embed (animated slides) ----------------------
+    # Microsoft's public Office viewer (view.officeapps.live.com) fetches the
+    # deck over HTTPS and renders it WITH animations/transitions. It has a hard
+    # size ceiling (~10 MB) — past it the iframe renders blank. We only hand
+    # back an embed URL when the deck fits; otherwise the caller falls back to
+    # the pre-rendered per-slide PNGs (no animations, but always reliable).
+    PPTX_EMBED_MAX_BYTES: int = 10 * 1024 * 1024  # 10 MiB
+
     # --- Amazon Nova Sonic (speech-to-speech) ---------------------------
     # Native S2S model on Bedrock: mic audio in -> agent audio out, LLM
     # built in (no STT->Claude->TTS cascade). Uses the bidirectional
