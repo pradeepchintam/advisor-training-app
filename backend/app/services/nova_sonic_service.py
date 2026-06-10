@@ -314,10 +314,15 @@ class NovaSonicSession:
         async with self._send_lock:
             await self._stream.input_stream.send(chunk)
 
+    _audio_count = 0
+
     async def send_audio(self, pcm_chunk: bytes) -> None:
         """Forward one raw PCM16 @16kHz mic chunk to Nova."""
         if not pcm_chunk or self._closed:
             return
+        self._audio_count += 1
+        if self._audio_count <= 3 or self._audio_count % 100 == 0:
+            logger.info("Nova recv audio #%d len=%d", self._audio_count, len(pcm_chunk))
         try:
             await self._send({"event": {"audioInput": {
                 "promptName": self._prompt_name,
