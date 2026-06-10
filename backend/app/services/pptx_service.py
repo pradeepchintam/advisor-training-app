@@ -342,7 +342,15 @@ def get_pptx_embed_url(presentation_id: str, ttl_seconds: int = 3600) -> str | N
     falls back to the static PNG path."""
     from urllib.parse import quote
 
-    staged = ensure_pptx_in_s3(presentation_id)
+    # DISABLED: the public Office-Online viewer can't reliably render our decks
+    # — they're large (tens of MB), which exceeds the embed viewer's size limit,
+    # and the presigned src expires mid-session. The pre-rendered per-slide PNGs
+    # are reliable and always available, so we always fall back to them by
+    # returning None here. (Re-enable only with a small-deck size guard + a
+    # durable public URL if animated embeds are needed later.)
+    return None
+
+    staged = ensure_pptx_in_s3(presentation_id)  # noqa: unreachable — see above
     if staged is None:
         return None
     bucket, key = staged
