@@ -462,8 +462,16 @@ export default function Session() {
     // Wire the mic worklet → 16kHz PCM → WS binary frames (for Nova input).
     const startMicCapture = async () => {
       try {
-        const track = mediaStreamRef.current?.getAudioTracks()[0];
-        if (!track) return;
+        // Wait up to 3s for startRecording() to finish getUserMedia — both
+        // effects fire on the same `session` state change and getUserMedia
+        // can take 500ms+, so onopen can race ahead of the mic track being set.
+        let track: MediaStreamTrack | null = null;
+        for (let i = 0; i < 30; i++) {
+          track = mediaStreamRef.current?.getAudioTracks()[0] ?? null;
+          if (track) break;
+          await new Promise<void>((r) => setTimeout(r, 100));
+        }
+        if (!track) { console.warn('Nova mic capture: no audio track after 3s'); return; }
         const ctx = new AudioContext();
         captureCtx = ctx;
         await ctx.audioWorklet.addModule('/pcm-capture-worklet.js');
