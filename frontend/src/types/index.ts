@@ -194,11 +194,14 @@ export interface SessionPublic {
   assignment_id?: string | null;
   profile_name?: string | null;
   engage_client?: boolean;
+  /** Live-voice engine used for the session. */
+  voice_mode?: 'standard' | 'nova_sonic';
 }
 
 export interface SessionDetail extends Session {
   duration_seconds?: number;
   engage_client?: boolean;
+  voice_mode?: 'standard' | 'nova_sonic';
 }
 
 export interface QuestionnaireCategory {

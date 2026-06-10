@@ -103,20 +103,28 @@ export const sessionsApi = {
   create: async (
     persona: Partial<ClientPersona>,
     engageClient = false,
+    voiceMode: 'standard' | 'nova_sonic' = 'standard',
   ): Promise<SessionDetail> => {
-    const response = await api.post('/sessions', { persona, engage_client: engageClient });
+    const response = await api.post('/sessions', {
+      persona,
+      engage_client: engageClient,
+      voice_mode: voiceMode,
+    });
     return response.data;
   },
   /** Start a session that the admin assigned. Persona is locked server-side.
    *  `engageClient` (default false) — when false the client stays silent and
-   *  it's a one-sided deck-walkthrough practice. */
+   *  it's a one-sided deck-walkthrough practice. `voiceMode` picks the live
+   *  voice engine ('standard' cascade or 'nova_sonic' native S2S). */
   createFromAssignment: async (
     assignmentId: string,
     engageClient = false,
+    voiceMode: 'standard' | 'nova_sonic' = 'standard',
   ): Promise<SessionDetail> => {
     const response = await api.post('/sessions', {
       assignment_id: assignmentId,
       engage_client: engageClient,
+      voice_mode: voiceMode,
     });
     return response.data;
   },
@@ -131,6 +139,11 @@ export const sessionsApi = {
   },
   end: async (id: string): Promise<void> => {
     await api.post(`/sessions/${id}/end`);
+  },
+  /** Abandon an active session without saving or analyzing it. Deletes the
+   *  session and reverts any backing assignment to startable. */
+  discard: async (id: string): Promise<void> => {
+    await api.post(`/sessions/${id}/discard`);
   },
   uploadRecording: async (id: string, blob: Blob): Promise<void> => {
     const formData = new FormData();

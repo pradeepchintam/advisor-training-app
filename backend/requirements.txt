@@ -19,4 +19,9 @@ python-pptx==1.0.2
 imageio-ffmpeg==0.5.1
 Pillow==10.4.0
 pypdf==4.3.1
-amazon-transcribe==0.6.4
+# NOTE: amazon-transcribe is installed separately in the Dockerfile with
+# --no-deps. It pins awscrt~=0.26.1, but aws-sdk-bedrock-runtime (Nova Sonic)
+# needs awscrt~=0.32.0. The two pins are mutually exclusive for pip's resolver,
+# yet amazon-transcribe works fine at runtime on awscrt 0.32 (verified), so we
+# let the Bedrock SDK choose awscrt and install transcribe without its deps.
+aws-sdk-bedrock-runtime==0.6.0

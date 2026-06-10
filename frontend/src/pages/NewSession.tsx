@@ -22,17 +22,21 @@ export default function NewSession() {
   const [loading, setLoading] = useState(false);
   // Default unchecked → one-sided deck-walkthrough practice (client silent).
   const [engageClient, setEngageClient] = useState(false);
+  // Live-voice engine. Nova Sonic is native speech-to-speech (always interactive).
+  const [voiceMode, setVoiceMode] = useState<'standard' | 'nova_sonic'>('standard');
   const navigate = useNavigate();
   const toast = useToast();
 
   const isCouple = form.client_type === 'couple';
+  const isNova = voiceMode === 'nova_sonic';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
       const persona = buildPersonaPayload(form);
-      const session = await sessionsApi.create(persona, engageClient);
+      // Nova is inherently interactive, so it always engages the client.
+      const session = await sessionsApi.create(persona, isNova ? true : engageClient, voiceMode);
       toast.success('Session created! Connecting...');
       navigate(`/sessions/${session.id}`);
     } catch (err: unknown) {
@@ -44,6 +48,32 @@ export default function NewSession() {
 
   const submitButton = (
     <div>
+      <div className="mb-4 p-3 rounded-lg border border-navy-700 bg-navy-900">
+        <span className="text-sm font-medium text-white">Live voice engine</span>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setVoiceMode('standard')}
+            className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
+              !isNova ? 'border-gold-500 bg-navy-800 text-white' : 'border-navy-700 text-slate-400 hover:border-navy-600'
+            }`}
+          >
+            <span className="block font-medium">Standard</span>
+            <span className="block opacity-70 mt-0.5">Claude + ElevenLabs. Supports one-sided practice & distinct couple voices.</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setVoiceMode('nova_sonic')}
+            className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
+              isNova ? 'border-gold-500 bg-navy-800 text-white' : 'border-navy-700 text-slate-400 hover:border-navy-600'
+            }`}
+          >
+            <span className="block font-medium">Nova Sonic <span className="opacity-60">(beta)</span></span>
+            <span className="block opacity-70 mt-0.5">Native voice-to-voice, lower latency. Always interactive; one shared voice.</span>
+          </button>
+        </div>
+      </div>
+      {!isNova && (
       <label className="flex items-start gap-3 mb-4 p-3 rounded-lg border border-navy-700 bg-navy-900 cursor-pointer hover:border-navy-600 transition-colors">
         <input
           type="checkbox"
@@ -60,6 +90,7 @@ export default function NewSession() {
           </span>
         </span>
       </label>
+      )}
       <button
         type="submit"
         disabled={loading}
@@ -73,7 +104,7 @@ export default function NewSession() {
             </svg>
             Creating Session...
           </span>
-        ) : engageClient ? (
+        ) : (engageClient || isNova) ? (
           isCouple ? 'Generate Couple & Start Interactive Session' : 'Generate Client & Start Interactive Session'
         ) : (
           isCouple ? 'Generate Couple & Start Practice' : 'Generate Client & Start Practice'

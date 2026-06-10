@@ -72,6 +72,10 @@ class TrainingSession(Base):
     # still scored. When True, the client engages interactively (the
     # original behavior).
     engage_client: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Which live-voice engine drives the conversation. "standard" = the
+    # STT->Claude->ElevenLabs cascade (default). "nova_sonic" = Amazon Nova
+    # Sonic native speech-to-speech over the separate /ws/nova endpoint.
+    voice_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="standard")
     assignment_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("session_assignments.id", ondelete="SET NULL"),

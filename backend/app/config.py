@@ -36,6 +36,31 @@ class Settings(BaseSettings):
     # for offline/non-realtime content.
     ELEVENLABS_MODEL_ID: str = "eleven_flash_v2_5"
 
+    # --- ElevenLabs Conversational AI (Agents) trial ---------------------
+    # Separate key with convai_read/convai_write scopes (the TTS key above
+    # is text-to-speech only). Kept distinct so the trial never disturbs the
+    # production streaming-TTS path. Only used by the /api/agent-trial path.
+    ELEVENLABS_CONVAI_API_KEY: str = ""
+    ELEVENLABS_TRIAL_AGENT_ID: str = ""
+
+    # --- Simli realtime avatar trial -------------------------------------
+    # Photoreal talking-head avatar driven by an external (ElevenLabs) audio
+    # stream. Only used by the /api/simli-trial path. Key stays server-side;
+    # the browser gets a short-lived session token, never the key.
+    SIMLI_API_KEY: str = ""
+    SIMLI_BASE_URL: str = "https://api.simli.ai"
+
+    # --- Amazon Nova Sonic (speech-to-speech) trial ---------------------
+    # Native S2S model on Bedrock: mic audio in -> agent audio out, LLM
+    # built in (no STT->Claude->TTS cascade). Uses the bidirectional
+    # streaming API via the experimental aws-sdk-bedrock-runtime SDK.
+    # Credentials come from the standard AWS env vars / instance role.
+    NOVA_SONIC_MODEL_ID: str = "amazon.nova-sonic-v1:0"
+    NOVA_SONIC_REGION: str = "us-east-1"
+    # Default output voice; per-session we map persona gender -> a preset
+    # Nova voice (matthew/tiffany/amy). Age is steered via the system prompt.
+    NOVA_SONIC_VOICE_ID: str = "matthew"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

@@ -1,4 +1,6 @@
-FROM python:3.11-slim
+# Python 3.12: required by aws-sdk-bedrock-runtime (Nova Sonic bidirectional
+# streaming SDK), which declares Requires-Python >=3.12.
+FROM python:3.12-slim
 
 # System deps:
 #   libreoffice — converts .pptx → .pdf (used by pptx_service)
@@ -18,6 +20,9 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# amazon-transcribe pins awscrt~=0.26 which conflicts with the Nova Sonic SDK's
+# awscrt~=0.32; install it without deps (it works on 0.32 at runtime).
+RUN pip install --no-cache-dir --no-deps amazon-transcribe==0.6.4
 
 COPY . .
 

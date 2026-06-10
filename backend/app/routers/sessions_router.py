@@ -466,6 +466,7 @@ async def list_sessions(
             assignment_id=s.assignment_id,
             profile_name=profile_name_by_assignment.get(s.assignment_id) if s.assignment_id else None,
             engage_client=bool(getattr(s, "engage_client", False)),
+            voice_mode=getattr(s, "voice_mode", "standard") or "standard",
         )
         for s in sessions
     ]
@@ -602,7 +603,10 @@ async def create_session(
         assignment_id=assignment_id,
         presentation_id=presentation_id,
         appointment_type=appointment_type,
-        engage_client=bool(payload.engage_client),
+        # Nova Sonic is an inherently interactive live agent, so a session
+        # using it always engages the client (one-sided makes no sense there).
+        engage_client=bool(payload.engage_client) or payload.voice_mode == "nova_sonic",
+        voice_mode=(payload.voice_mode or "standard"),
     )
     db.add(session)
     await db.flush()
@@ -621,6 +625,7 @@ async def create_session(
         assignment_id=session.assignment_id,
         profile_name=profile_name,
         engage_client=session.engage_client,
+        voice_mode=session.voice_mode,
     )
 
 
@@ -694,6 +699,7 @@ async def get_session(
         assignment_id=session.assignment_id,
         profile_name=profile_name,
         engage_client=bool(getattr(session, "engage_client", False)),
+        voice_mode=getattr(session, "voice_mode", "standard") or "standard",
     )
 
 
@@ -743,6 +749,53 @@ async def end_session(
     background_tasks.add_task(_run_analysis, session_id)
 
     return {"message": msg, "session_id": session_id}
+
+
+@router.post("/{session_id}/discard", response_model=dict)
+async def discard_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_advisor_or_admin),
+):
+    """Abandon an in-progress session WITHOUT saving or analyzing it.
+
+    Deletes the session row (so it never appears in history and is never
+    scored) and, if it was fulfilling an admin assignment, reverts that
+    assignment to "pending" so the advisor can start it again fresh from
+    the dashboard. Only allowed while the session is still active.
+    """
+    result = await db.execute(
+        select(TrainingSession).where(TrainingSession.id == session_id)
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if current_user.role != "admin" and session.advisor_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    # Gate on whether the session was actually ANALYZED, not on status. The
+    # live WS handler flips an active session to "completed" on socket close
+    # (which is what discard does to tear down), but that path never runs
+    # analysis — so a completed-but-unanalyzed session is still a throw-away.
+    # Only a genuinely scored session (via End & Analyze) is protected.
+    if session.analysis is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This session has already been analyzed and can't be discarded.",
+        )
+
+    assignment_id = session.assignment_id
+    # Revert the assignment so it shows up as startable again.
+    if assignment_id:
+        a_result = await db.execute(
+            select(SessionAssignment).where(SessionAssignment.id == assignment_id)
+        )
+        assignment = a_result.scalar_one_or_none()
+        if assignment is not None and assignment.status == "in_progress":
+            assignment.status = "pending"
+
+    await db.delete(session)
+    await db.commit()
+    return {"message": "Session discarded", "assignment_id": assignment_id}
 
 
 @router.get("/{session_id}/recording")

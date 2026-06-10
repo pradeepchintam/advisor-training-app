@@ -19,6 +19,9 @@ import PresentationManagement from './pages/admin/PresentationManagement';
 import SessionProfiles from './pages/admin/SessionProfiles';
 import AssignmentManager from './pages/admin/AssignmentManager';
 import StartAssignment from './pages/StartAssignment';
+import AgentTrial from './pages/AgentTrial';
+import AvatarTrial from './pages/AvatarTrial';
+import NovaTrial from './pages/NovaTrial';
 
 function LoadingScreen() {
   return (
@@ -225,6 +228,36 @@ export default function App() {
         element={
           <ProtectedRoute advisorOnly>
             <Layout><StartAssignment /></Layout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Local trial: ElevenLabs Conversational AI (Agents) couple spike */}
+      <Route
+        path="/agent-trial"
+        element={
+          <ProtectedRoute>
+            <Layout><AgentTrial /></Layout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Local trial: Simli photoreal avatar couple spike */}
+      <Route
+        path="/avatar-trial"
+        element={
+          <ProtectedRoute>
+            <Layout><AvatarTrial /></Layout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Local trial: Amazon Nova Sonic native speech-to-speech */}
+      <Route
+        path="/nova-trial"
+        element={
+          <ProtectedRoute>
+            <Layout><NovaTrial /></Layout>
           </ProtectedRoute>
         }
       />

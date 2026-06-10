@@ -10,6 +10,7 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8081',
         changeOrigin: true,
+        ws: true, // allow WebSocket upgrades (e.g. /api/nova-trial/ws)
       },
       '/ws': {
         target: 'ws://localhost:8081',

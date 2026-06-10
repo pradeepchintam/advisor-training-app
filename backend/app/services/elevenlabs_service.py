@@ -175,3 +175,42 @@ async def stream_pcm(
         raise RuntimeError(f"ElevenLabs network error: {e}") from e
 
 
+async def synthesize_pcm16k(
+    text: str,
+    gender: str | None = None,
+    age_group: str | None = None,
+) -> bytes:
+    """Buffered synth returning raw PCM16 @ 16kHz mono — the exact format the
+    Simli avatar's sendAudioData() expects. Used only by the avatar trial."""
+    if not text or not text.strip():
+        raise ValueError("text is required")
+    if not is_available():
+        raise RuntimeError("ElevenLabs is not configured (ELEVENLABS_API_KEY unset)")
+
+    voice_id = _pick_voice(gender, age_group)
+    settings_obj = _voice_settings(age_group)
+    if len(text) > 5000:
+        text = text[:5000].rsplit(" ", 1)[0]
+
+    url = f"{settings.ELEVENLABS_BASE_URL}/text-to-speech/{voice_id}"
+    params = {"output_format": "pcm_16000"}
+    headers = {
+        "xi-api-key": settings.ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "audio/pcm",
+    }
+    body = {
+        "text": text,
+        "model_id": settings.ELEVENLABS_MODEL_ID,
+        "voice_settings": settings_obj,
+    }
+    client = await _get_client()
+    try:
+        resp = await client.post(url, params=params, headers=headers, json=body)
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"ElevenLabs network error: {e}") from e
+    if resp.status_code != 200:
+        raise RuntimeError(f"ElevenLabs returned {resp.status_code}: {resp.text[:200]}")
+    return resp.content
+
+

@@ -275,6 +275,8 @@ export default function Session() {
   const [hasAudioTrack, setHasAudioTrack] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const [isDiscarding, setIsDiscarding] = useState(false);
   // interimText is no longer displayed (we don't show what the advisor is
   // saying — this is meant to mimic a real face-to-face appointment). The
   // state is kept so the existing setInterimText() calls in the WS / mic
@@ -340,6 +342,13 @@ export default function Session() {
   // Polly would default to Matthew for everyone. The ref is updated on
   // every render so reads inside the async path always see the latest.
   const personaRef = useRef<SessionDetail['persona'] | null>(null);
+  // ---- Nova Sonic mode ----------------------------------------------------
+  // When the session's voice_mode is "nova_sonic", the client's voice is
+  // produced natively by Nova (no STT->Claude->ElevenLabs cascade). The
+  // frontend connects to /ws/nova/{id}, plays backend-pushed 24kHz PCM, and
+  // skips the local sentence-TTS path entirely.
+  const novaModeRef = useRef(false);
+  const novaPlayerRef = useRef<StreamingPCMPlayer | null>(null);
 
   // ---- Always-on interactive mic ----------------------------------------
   // The mic is hot for the entire session. VAD silence-debounce auto-sends
@@ -400,6 +409,7 @@ export default function Session() {
     sessionsApi.get(id).then((s) => {
       setSession(s);
       personaRef.current = s.persona ?? null;
+      novaModeRef.current = s.voice_mode === 'nova_sonic';
       if (s.conversation?.length) {
         setMessages(s.conversation);
       }
@@ -689,6 +699,9 @@ export default function Session() {
   }, [session?.persona?.gender, session?.persona?.age_group]);
 
   const enqueueSentences = useCallback((sentences: string[]) => {
+    // In Nova Sonic mode the client's voice is streamed as audio from the
+    // backend — never synthesize locally via ElevenLabs.
+    if (novaModeRef.current) return;
     if (sentences.length === 0) return;
     ttsQueueRef.current.push(...sentences);
     if (!ttsPlayingRef.current) void playNextSentence();
@@ -877,7 +890,10 @@ export default function Session() {
   // WebSocket setup — defer creation to next tick so StrictMode's double-invoke
   // can cancel the first attempt before the socket actually opens.
   useEffect(() => {
-    if (!id || !token) return;
+    // Wait for the session to load so we know which voice engine to use
+    // (the WS endpoint differs for Nova Sonic).
+    if (!id || !token || !session) return;
+    const novaMode = session.voice_mode === 'nova_sonic';
     let cancelled = false;
     let ws: WebSocket | null = null;
     let reconnectAttempts = 0;
@@ -885,8 +901,10 @@ export default function Session() {
 
     const connect = () => {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${wsProtocol}//${window.location.host}/ws/session/${id}?token=${token}`;
+      const path = novaMode ? `/ws/nova/${id}` : `/ws/session/${id}`;
+      const wsUrl = `${wsProtocol}//${window.location.host}${path}?token=${token}`;
       ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -901,6 +919,14 @@ export default function Session() {
       };
 
       ws.onmessage = (evt) => {
+        // Nova Sonic mode: the client's voice arrives as raw 24kHz PCM binary
+        // frames. Play them through a persistent StreamingPCMPlayer.
+        if (novaMode && evt.data instanceof ArrayBuffer) {
+          if (!novaPlayerRef.current) novaPlayerRef.current = new StreamingPCMPlayer(24000);
+          novaPlayerRef.current.push(new Uint8Array(evt.data));
+          setSessionStatus('client_speaking');
+          return;
+        }
         try {
           const data = JSON.parse(evt.data as string) as {
             type: string;
@@ -937,6 +963,11 @@ export default function Session() {
             ttsQueueRef.current = [];
             unspokenBufRef.current = '';
             stopAudio();
+            // Nova mode: stop the streamed client audio immediately.
+            if (novaPlayerRef.current) {
+              void novaPlayerRef.current.stop();
+              novaPlayerRef.current = null;
+            }
             streamingRef.current = false;
             streamMsgIndexRef.current = null;
             setSessionStatus('listening');
@@ -1031,15 +1062,20 @@ export default function Session() {
       cancelled = true;
       clearTimeout(timer);
       ws?.close();
+      if (novaPlayerRef.current) {
+        void novaPlayerRef.current.stop();
+        novaPlayerRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, token]);
+  }, [id, token, session?.voice_mode]);
 
   // Speak first client message on load if conversation already has messages.
   // Skipped in one-sided practice mode (engage_client=false) — the client
   // never speaks there.
   useEffect(() => {
-    if (session?.engage_client && messages.length === 1 && messages[0].role === 'client') {
+    if (session?.engage_client && session?.voice_mode !== 'nova_sonic'
+        && messages.length === 1 && messages[0].role === 'client') {
       setTimeout(() => speak(messages[0].text), 800);
     }
   }, [messages, speak, session?.engage_client]);
@@ -1506,6 +1542,48 @@ export default function Session() {
     }
   };
 
+  // Abandon the session WITHOUT saving or analyzing it. Tears the live
+  // session down like End, but skips the recording upload and the
+  // end/analyze call — then asks the backend to delete the session (and
+  // revert any backing assignment so it can be started again).
+  const handleDiscardSession = async () => {
+    setIsDiscarding(true);
+    endingRef.current = true; // stop the WS reconnect loop
+    setShowDiscardConfirm(false);
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+    setIsRecording(false);
+    setIsVideoRecording(false);
+
+    try {
+      stopAudio();
+      stopLiveTranscribe();
+      isTalkingRef.current = false;
+      recognitionRef.current?.stop();
+      // Stop the recorder but DO NOT upload — we're throwing this away.
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try { mediaRecorderRef.current.stop(); } catch { /* already stopped */ }
+      }
+      chunksRef.current = [];
+      // Close the socket without sending end_session (no completion/analysis).
+      if (wsRef.current) {
+        try { wsRef.current.close(); } catch { /* ignore */ }
+      }
+      if (id) {
+        await sessionsApi.discard(id);
+        toast.success('Session discarded — nothing was saved. You can start it again.');
+        navigate('/dashboard');
+      }
+    } catch (err) {
+      console.error('Discard session error:', err);
+      toast.error(`Failed to discard session: ${getErrorMessage(err)}`);
+      setIsDiscarding(false);
+    }
+  };
+
   const persona = session?.persona;
 
   return (
@@ -1536,6 +1614,18 @@ export default function Session() {
             </svg>
             <span className="text-slate-400 text-xs font-mono">{formatTime(elapsedSeconds)}</span>
           </div>
+          {/* Live-voice engine badge — confirms at a glance whether this
+              session is running on Nova Sonic (native S2S) or the cascade. */}
+          <span
+            className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full font-semibold ${
+              session?.voice_mode === 'nova_sonic'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                : 'bg-navy-700 text-slate-400 border border-navy-600'
+            }`}
+            title="Live-voice engine for this session"
+          >
+            {session?.voice_mode === 'nova_sonic' ? 'Nova Sonic' : 'Standard'}
+          </span>
         </div>
 
         <div className="flex items-center gap-3">
@@ -1554,8 +1644,16 @@ export default function Session() {
           )}
 
           <button
+            onClick={() => setShowDiscardConfirm(true)}
+            disabled={isEnding || isDiscarding}
+            title="Stop without saving or scoring — you can start this session again"
+            className="border border-navy-600 hover:border-slate-400 text-slate-300 hover:text-white disabled:opacity-50 font-semibold px-3 py-1.5 rounded-lg text-sm transition-colors"
+          >
+            {isDiscarding ? 'Discarding...' : 'Discard'}
+          </button>
+          <button
             onClick={() => setShowEndConfirm(true)}
-            disabled={isEnding}
+            disabled={isEnding || isDiscarding}
             className="bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white font-semibold px-4 py-1.5 rounded-lg text-sm transition-colors"
           >
             {isEnding ? 'Ending...' : 'End Session'}
@@ -1987,6 +2085,18 @@ export default function Session() {
         confirmClassName="bg-red-600 hover:bg-red-700 text-white"
         onConfirm={handleEndSession}
         onCancel={() => setShowEndConfirm(false)}
+      />
+
+      {/* Discard (no save / no analysis) Confirmation */}
+      <ConfirmModal
+        isOpen={showDiscardConfirm}
+        title="Discard this session?"
+        message="This stops the session without saving the recording or running any analysis. Nothing is scored or kept. If this was an assigned session, it returns to your dashboard so you can start it again."
+        confirmLabel="Discard & Exit"
+        cancelLabel="Keep Going"
+        confirmClassName="bg-red-600 hover:bg-red-700 text-white"
+        onConfirm={handleDiscardSession}
+        onCancel={() => setShowDiscardConfirm(false)}
       />
     </div>
   );

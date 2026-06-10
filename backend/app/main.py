@@ -14,6 +14,9 @@ from app.routers.questionnaire_router import router as questionnaire_router
 from app.routers.presentations_router import router as presentations_router
 from app.routers.scripts_router import router as scripts_router
 from app.routers.tts_router import router as tts_router
+from app.routers.agent_trial_router import router as agent_trial_router
+from app.routers.simli_trial_router import router as simli_trial_router
+from app.routers.nova_trial_router import router as nova_trial_router
 from app.routers.profiles_router import router as profiles_router
 from app.routers.assignments_router import router as assignments_router
 
@@ -45,6 +48,9 @@ app.include_router(questionnaire_router, prefix="/api/questionnaire", tags=["que
 app.include_router(presentations_router, prefix="/api/presentations", tags=["presentations"])
 app.include_router(scripts_router, prefix="/api/scripts", tags=["scripts"])
 app.include_router(tts_router, prefix="/api/tts", tags=["tts"])
+app.include_router(agent_trial_router, prefix="/api/agent-trial", tags=["agent-trial"])
+app.include_router(simli_trial_router, prefix="/api/simli-trial", tags=["simli-trial"])
+app.include_router(nova_trial_router, prefix="/api/nova-trial", tags=["nova-trial"])
 app.include_router(profiles_router, prefix="/api/profiles", tags=["profiles"])
 app.include_router(assignments_router, prefix="/api/assignments", tags=["assignments"])
 
@@ -59,8 +65,20 @@ async def get_persona_options():
 
 
 # ---------------------------------------------------------------------------
-# WebSocket endpoint
+# WebSocket endpoints
 # ---------------------------------------------------------------------------
+@app.websocket("/ws/nova/{session_id}")
+async def nova_session_endpoint(websocket: WebSocket, session_id: str, token: str):
+    """Nova Sonic native speech-to-speech for a real session (voice_mode=nova_sonic).
+
+    Separate from /ws/session to keep the cascade handler untouched. Persists
+    turns into session.conversation identically so recording + scoring are
+    unchanged. See app/nova_session_ws.py.
+    """
+    from app.nova_session_ws import handle_nova_session
+    await handle_nova_session(websocket, session_id, token)
+
+
 @app.websocket("/ws/session/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str):
     """
