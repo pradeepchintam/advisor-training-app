@@ -347,8 +347,15 @@ def get_pptx_embed_url(presentation_id: str, ttl_seconds: int = 3600) -> str | N
     Returns a fully-formed iframe `src` URL of the form:
         https://view.officeapps.live.com/op/embed.aspx?src=<URL-encoded PPTX URL>
 
+    The deck is served from OUR OWN public endpoint
+    (`<APP_PUBLIC_BASE_URL>/api/public/decks/<id>/deck.pptx`) rather than an S3
+    presigned URL: the instance-role presigned URLs are ~2.5 KB long (they carry
+    an STS security token) and the Office viewer refuses to load them. A short,
+    clean, unauthenticated app URL works reliably.
+
     Returns None (→ caller falls back to static PNGs) when:
-      * the bucket isn't configured or no local .pptx exists,
+      * APP_PUBLIC_BASE_URL isn't set (e.g. local dev — Microsoft can't reach
+        localhost), or no local .pptx exists,
       * the presentation has MORE THAN ONE .pptx (the embed can only render a
         single file; multi-file decks are combined into one PNG set, so the
         PNG path is the correct full view), or
@@ -356,6 +363,10 @@ def get_pptx_embed_url(presentation_id: str, ttl_seconds: int = 3600) -> str | N
         size ceiling the iframe renders blank, so PNGs are safer.
     """
     from urllib.parse import quote
+
+    base = (settings.APP_PUBLIC_BASE_URL or "").rstrip("/")
+    if not base:
+        return None  # no public URL Microsoft could fetch (local dev)
 
     # Guard 1: single-file only. A multi-file presentation (e.g. the 4-deck
     # Annuity set) is merged into one PNG sequence; embedding would show only
@@ -378,19 +389,5 @@ def get_pptx_embed_url(presentation_id: str, ttl_seconds: int = 3600) -> str | N
         )
         return None
 
-    staged = ensure_pptx_in_s3(presentation_id)
-    if staged is None:
-        return None
-    bucket, key = staged
-    client = _s3_client_for_embed()
-    try:
-        presigned = client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket, "Key": key},
-            ExpiresIn=max(60, ttl_seconds),
-        )
-    except Exception as e:  # noqa: BLE001
-        import logging
-        logging.getLogger("trajan.pptx").warning("Presigned URL failed: %s", e)
-        return None
-    return f"{_OFFICE_VIEWER_BASE}?src={quote(presigned, safe='')}"
+    deck_url = f"{base}/api/public/decks/{presentation_id}/deck.pptx"
+    return f"{_OFFICE_VIEWER_BASE}?src={quote(deck_url, safe='')}"

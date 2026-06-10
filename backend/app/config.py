@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # back an embed URL when the deck fits; otherwise the caller falls back to
     # the pre-rendered per-slide PNGs (no animations, but always reliable).
     PPTX_EMBED_MAX_BYTES: int = 10 * 1024 * 1024  # 10 MiB
+    # Public origin of THIS app (e.g. https://trainer.jupiterlead.com). The
+    # Office viewer fetches the deck from <base>/api/public/decks/<id>/deck.pptx
+    # — it must be a publicly-reachable URL. Empty => embed disabled (PNG only),
+    # which is the correct default for local dev (no public URL for Microsoft).
+    APP_PUBLIC_BASE_URL: str = ""
 
     # --- Amazon Nova Sonic (speech-to-speech) ---------------------------
     # Native S2S model on Bedrock: mic audio in -> agent audio out, LLM

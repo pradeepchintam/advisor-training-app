@@ -19,6 +19,10 @@ services:
       # "no re-transcription / no vision pass" instead of crashing.
       ANALYSIS_S3_BUCKET: ${ANALYSIS_S3_BUCKET:-}
       AWS_REGION: ${AWS_REGION}
+      # Public origin of this app — the Office Online viewer fetches decks from
+      # <APP_PUBLIC_BASE_URL>/api/public/decks/<id>/deck.pptx to render slides
+      # with their animations. Reuses the same DOMAIN Caddy serves on.
+      APP_PUBLIC_BASE_URL: https://${DOMAIN}
       # When running on EC2 with an instance role, AWS SDK picks up creds automatically
       # via the instance metadata service — do NOT set empty AWS_ACCESS_KEY_ID /
       # AWS_SECRET_ACCESS_KEY here as empty strings override the instance role lookup.
