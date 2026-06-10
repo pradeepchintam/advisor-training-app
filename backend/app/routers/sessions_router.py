@@ -1,9 +1,10 @@
+import os
 import uuid
 from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -864,29 +865,59 @@ async def get_recording(
             detail=f"No recording file found for session {session_id}. The advisor may not have uploaded one, or it was lost during a server restart.",
         )
 
-    # Detect media type by sniffing first bytes — WebM video files start with the
-    # EBML magic, but we can simplify by checking the filename or file content.
     from pathlib import Path as _P
     fpath = _P(recording_path)
+    file_size = os.path.getsize(recording_path)
+
+    # Detect media type by sniffing first bytes.
     media_type = "video/webm"
     try:
         with open(recording_path, "rb") as fh:
             head = fh.read(128)
-        # Both audio and video WebM share the EBML header; check for the Tracks
-        # element with a TrackType of video (0x83 0x81 0x01) for video. Easier
-        # heuristic: assume video if file is larger than ~1KB and the recording
-        # extension/MIME hint says so.
-        if b"V_VP" in head or b"V_AV" in head:
-            media_type = "video/webm"
-        elif b"A_OPUS" in head or b"A_VORBIS" in head:
+        if b"A_OPUS" in head or b"A_VORBIS" in head:
             media_type = "audio/webm"
     except OSError:
         pass
 
-    return FileResponse(
-        path=recording_path,
+    # Parse Range header so browsers can seek and so Safari/Chrome don't stall.
+    range_header = request.headers.get("range")
+    start = 0
+    end = file_size - 1
+
+    if range_header:
+        try:
+            ranges = range_header.strip().lower().removeprefix("bytes=")
+            range_start, range_end = ranges.split("-", 1)
+            start = int(range_start) if range_start else 0
+            end = int(range_end) if range_end else file_size - 1
+        except Exception:
+            pass
+
+    chunk_size = end - start + 1
+
+    def _iter_file(path: str, s: int, length: int, buf: int = 65536):
+        with open(path, "rb") as fh:
+            fh.seek(s)
+            remaining = length
+            while remaining > 0:
+                data = fh.read(min(buf, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+
+    headers = {
+        "Content-Disposition": "inline",
+        "Accept-Ranges": "bytes",
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Content-Length": str(chunk_size),
+    }
+    status_code = 206 if range_header else 200
+    return StreamingResponse(
+        _iter_file(recording_path, start, chunk_size),
+        status_code=status_code,
         media_type=media_type,
-        filename=f"session_{session_id}{fpath.suffix or '.webm'}",
+        headers=headers,
     )
 
 
