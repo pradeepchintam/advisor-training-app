@@ -408,9 +408,20 @@ export default function Session() {
     setIsVideoRecording(!!videoTrack);
     setHasAudioTrack(!!audioTrack);
 
-    const mimeType = videoTrack
-      ? (MediaRecorder.isTypeSupported('video/webm') ? 'video/webm' : 'audio/webm')
-      : 'audio/webm';
+    if (videoTrack && !audioTrack) {
+      toast.error('Microphone not available — recording will have video but NO audio. Check browser mic permissions and click Retry mic.');
+    }
+
+    // Prefer explicit vp8+opus so the browser always encodes audio when both
+    // tracks are present. Fall back to plain video/webm then audio/webm.
+    let mimeType = 'audio/webm';
+    if (videoTrack) {
+      if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
+        mimeType = 'video/webm;codecs=vp8,opus';
+      } else if (MediaRecorder.isTypeSupported('video/webm')) {
+        mimeType = 'video/webm';
+      }
+    }
 
     try {
       const mr = new MediaRecorder(combined, { mimeType });
