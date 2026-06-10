@@ -328,6 +328,7 @@ async def _run_analysis(session_id: str) -> None:
         asr_transcript: str | None = None
         delivery_metrics: dict | None = None
         local_path_for_vision: str | None = None
+        transcription: dict | None = None
         recording_path = session.recording_path
 
         if recording_path:
@@ -396,6 +397,18 @@ async def _run_analysis(session_id: str) -> None:
                 analysis["asr_transcript_used"] = True
 
             session.analysis = analysis
+
+            # Persist the ASR transcript as displayable conversation turns when
+            # there's no live transcript (one-way practice). Without this the
+            # transcript tab is empty even though scoring used the ASR text.
+            if not (session.conversation or []) and transcription:
+                from app.services.transcription_service import transcription_to_conversation
+                base_time = session.started_at or session.ended_at
+                if base_time is not None:
+                    turns = transcription_to_conversation(transcription, base_time)
+                    if turns:
+                        session.conversation = turns
+
             await db.commit()
         except Exception as e:
             log.exception("Analysis failed for session %s: %s", session_id, e)

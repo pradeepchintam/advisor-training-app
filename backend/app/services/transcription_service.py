@@ -228,6 +228,88 @@ def _normalize_aws_result(data: dict) -> dict:
     }
 
 
+_PUNCT_NO_SPACE = {".", ",", "!", "?", ";", ":", ")", "]", "}", "%", "”", "’"}
+
+
+def _join_tokens(tokens: list[str]) -> str:
+    """Join ASR word/punctuation tokens into readable text — punctuation hugs
+    the preceding word instead of getting a leading space."""
+    out = ""
+    for tok in tokens:
+        if out and tok and tok[0] not in _PUNCT_NO_SPACE:
+            out += " "
+        out += tok
+    return out.strip()
+
+
+def transcription_to_conversation(
+    transcription: dict,
+    base_time,
+    *,
+    pause_gap: float = 2.0,
+    max_words: int = 60,
+) -> list[dict]:
+    """Turn a normalized ASR result into conversation turns for DISPLAY.
+
+    Groups the timed `items` into turns, breaking on a speaker change, a pause
+    longer than `pause_gap`, or every `max_words` words (so one long monologue
+    isn't a single wall of text). Each turn matches the live-session shape
+    ``{"role", "text", "timestamp"}`` — `role` from the speaker map (defaults to
+    "advisor", correct for one-way practice), `timestamp` an ISO string of
+    ``base_time + item start offset`` so the UI's clock formatter renders it.
+
+    Falls back to a single advisor turn holding the full transcript when there
+    are no timed items.
+    """
+    from datetime import timedelta
+
+    items = transcription.get("items") or []
+    speakers = transcription.get("speakers") or {}
+    turns: list[dict] = []
+
+    cur: list[str] = []
+    cur_role: str | None = None
+    cur_start: float = 0.0
+    last_end: float | None = None
+
+    def flush():
+        nonlocal cur, cur_role
+        if cur:
+            turns.append({
+                "role": cur_role or "advisor",
+                "text": _join_tokens(cur),
+                "timestamp": (base_time + timedelta(seconds=cur_start)).isoformat(),
+            })
+        cur = []
+
+    for it in items:
+        txt = (it.get("text") or "").strip()
+        if not txt:
+            continue
+        role = speakers.get(it.get("speaker"), "advisor")
+        start = it.get("start")
+        gap = (start - last_end) if (start is not None and last_end is not None) else 0.0
+        if cur and (role != cur_role or gap > pause_gap or len(cur) >= max_words):
+            flush()
+        if not cur:
+            cur_role = role
+            cur_start = start if start is not None else (last_end or 0.0)
+        cur.append(txt)
+        if it.get("end") is not None:
+            last_end = it["end"]
+    flush()
+
+    if not turns:
+        full = (transcription.get("transcript") or "").strip()
+        if full:
+            turns.append({
+                "role": "advisor",
+                "text": full,
+                "timestamp": base_time.isoformat(),
+            })
+    return turns
+
+
 async def cleanup_analysis_artifacts(session_id: str) -> None:
     """Best-effort delete of transcribe-input/<session_id>/* objects."""
     if not settings.ANALYSIS_S3_BUCKET:
