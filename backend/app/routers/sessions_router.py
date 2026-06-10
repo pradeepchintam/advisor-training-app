@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -707,6 +707,7 @@ async def get_session(
 async def end_session(
     session_id: str,
     background_tasks: BackgroundTasks,
+    payload: dict | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_advisor_or_admin),
 ):
@@ -719,6 +720,12 @@ async def end_session(
 
     if current_user.role != "admin" and session.advisor_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    # One-way practice runs without a WebSocket, so the frontend sends the
+    # slide-change timeline here at end (Nova mode omits it — it has its own
+    # path). Only set when provided and the session has none yet.
+    if payload and isinstance(payload.get("slide_events"), list) and not (session.slide_events or []):
+        session.slide_events = payload["slide_events"]
 
     # Idempotent: if session is still active, mark it completed.
     # If already completed (e.g. via WebSocket disconnect), just re-trigger analysis.

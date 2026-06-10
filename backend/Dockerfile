@@ -20,9 +20,6 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-# amazon-transcribe pins awscrt~=0.26 which conflicts with the Nova Sonic SDK's
-# awscrt~=0.32; install it without deps (it works on 0.32 at runtime).
-RUN pip install --no-cache-dir --no-deps amazon-transcribe==0.6.4
 
 COPY . .
 

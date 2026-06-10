@@ -25,32 +25,7 @@ class Settings(BaseSettings):
     # Number of evenly-spaced video frames to sample for vision analysis.
     VISION_FRAME_COUNT: int = 6
 
-    # TTS — ElevenLabs Flash v2.5 streaming. There's no fallback; if
-    # ELEVENLABS_API_KEY is unset the /api/tts/stream endpoint returns
-    # 502 and the session surfaces an error rather than silently
-    # degrading to a worse voice.
-    ELEVENLABS_API_KEY: str = ""
-    ELEVENLABS_BASE_URL: str = "https://api.elevenlabs.io/v1"
-    # Flash v2.5 = low-latency model (~75ms vendor TTFA). For higher
-    # naturalness at the cost of latency, set to `eleven_multilingual_v2`
-    # for offline/non-realtime content.
-    ELEVENLABS_MODEL_ID: str = "eleven_flash_v2_5"
-
-    # --- ElevenLabs Conversational AI (Agents) trial ---------------------
-    # Separate key with convai_read/convai_write scopes (the TTS key above
-    # is text-to-speech only). Kept distinct so the trial never disturbs the
-    # production streaming-TTS path. Only used by the /api/agent-trial path.
-    ELEVENLABS_CONVAI_API_KEY: str = ""
-    ELEVENLABS_TRIAL_AGENT_ID: str = ""
-
-    # --- Simli realtime avatar trial -------------------------------------
-    # Photoreal talking-head avatar driven by an external (ElevenLabs) audio
-    # stream. Only used by the /api/simli-trial path. Key stays server-side;
-    # the browser gets a short-lived session token, never the key.
-    SIMLI_API_KEY: str = ""
-    SIMLI_BASE_URL: str = "https://api.simli.ai"
-
-    # --- Amazon Nova Sonic (speech-to-speech) trial ---------------------
+    # --- Amazon Nova Sonic (speech-to-speech) ---------------------------
     # Native S2S model on Bedrock: mic audio in -> agent audio out, LLM
     # built in (no STT->Claude->TTS cascade). Uses the bidirectional
     # streaming API via the experimental aws-sdk-bedrock-runtime SDK.

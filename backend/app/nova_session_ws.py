@@ -28,7 +28,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import WebSocket, WebSocketDisconnect
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.database import AsyncSessionLocal
 from app.services import nova_sonic_service as nova
@@ -107,6 +107,7 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
             return
 
         send_lock = asyncio.Lock()
+        persist_lock = asyncio.Lock()
         stop = asyncio.Event()
         # Accumulates assistant text for the current turn so we persist one
         # client message per turn (matching the cascade's behavior).
@@ -131,8 +132,18 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
                     stop.set()
 
         async def persist() -> None:
-            session.conversation = list(conversation)
-            await db.commit()
+            # Concurrency-safe: each write uses its OWN short-lived session
+            # (a fresh connection) serialized by a lock, instead of sharing the
+            # long-lived `db` across the pump + finalize tasks. This avoids
+            # "concurrent operations are not permitted" on a single connection.
+            async with persist_lock:
+                async with AsyncSessionLocal() as wdb:
+                    await wdb.execute(
+                        update(TrainingSession)
+                        .where(TrainingSession.id == session_id)
+                        .values(conversation=list(conversation))
+                    )
+                    await wdb.commit()
 
         async def finalize_turn() -> None:
             text = assistant_buf["text"].strip()
@@ -181,6 +192,19 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
 
         pump_task = asyncio.create_task(pump())
 
+        # --- keepalive: defeat idle-proxy timeouts (mirror cascade's 25s ping) ---
+        async def keepalive_loop() -> None:
+            while not stop.is_set():
+                try:
+                    await asyncio.sleep(25)
+                    await safe_send_json({"type": "ping"})
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    return
+
+        ping_task = asyncio.create_task(keepalive_loop())
+
         # --- client -> Nova loop ---
         try:
             while not stop.is_set():
@@ -212,10 +236,12 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
                 pass
             await nova_sess.close()
             pump_task.cancel()
-            try:
-                await pump_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            ping_task.cancel()
+            for t in (pump_task, ping_task):
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
             try:
                 await persist()
             except Exception:

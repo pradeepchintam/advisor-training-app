@@ -137,8 +137,13 @@ export const sessionsApi = {
     const response = await api.get(`/sessions/${id}/presentations`);
     return response.data;
   },
-  end: async (id: string): Promise<void> => {
-    await api.post(`/sessions/${id}/end`);
+  /** End the session and trigger analysis. `slideEvents` (one-way mode, which
+   *  has no WebSocket) carries the slide-change timeline collected client-side. */
+  end: async (
+    id: string,
+    slideEvents?: Array<{ slide_number: number; presentation_id?: string; timestamp: string }>,
+  ): Promise<void> => {
+    await api.post(`/sessions/${id}/end`, slideEvents?.length ? { slide_events: slideEvents } : {});
   },
   /** Abandon an active session without saving or analyzing it. Deletes the
    *  session and reverts any backing assignment to startable. */
@@ -348,57 +353,6 @@ export const assignmentsApi = {
   },
   cancel: async (id: string): Promise<void> => {
     await api.delete(`/assignments/${id}`);
-  },
-};
-
-/** Persona age bucket — drives voice + prosody on the TTS side. */
-export type TTSAgeGroup = 'young_adult' | 'middle_aged' | 'senior' | 'elderly';
-
-export const ttsApi = {
-  /** Open a streaming TTS connection (ElevenLabs Flash v2.5 on the backend).
-   *  Yields PCM (linear16, 24kHz, mono) chunks as they arrive — first chunk
-   *  typically lands ~250–300ms after the call vs ~2.4s for non-streaming.
-   *  Pass `signal` from an AbortController to cancel for barge-in.
-   *  Returns the audio format metadata pulled from response headers. */
-  streamPCM: async (
-    text: string,
-    gender: 'male' | 'female' | undefined,
-    ageGroup: TTSAgeGroup | undefined,
-    onChunk: (chunk: Uint8Array) => void,
-    signal?: AbortSignal,
-  ): Promise<{ sampleRate: number; channels: number } | null> => {
-    const baseUrl = api.defaults.baseURL ?? '/api';
-    // Auth token lives in localStorage and is normally injected by the
-    // axios request interceptor — fetch doesn't go through that, so we
-    // have to grab it ourselves.
-    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (token) headers.Authorization = `Bearer ${token}`;
-    let resp: Response;
-    try {
-      resp = await fetch(`${baseUrl}/tts/stream`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ text, gender: gender ?? null, age_group: ageGroup ?? null }),
-        signal,
-      });
-    } catch {
-      return null;
-    }
-    if (!resp.ok || !resp.body) return null;
-    const sampleRate = Number(resp.headers.get('X-Audio-Sample-Rate') || 24000);
-    const channels = Number(resp.headers.get('X-Audio-Channels') || 1);
-    const reader = resp.body.getReader();
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (value && value.byteLength > 0) onChunk(value);
-      }
-    } catch {
-      // Aborted or network drop — caller handles cleanup.
-    }
-    return { sampleRate, channels };
   },
 };
 
