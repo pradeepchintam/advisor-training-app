@@ -287,14 +287,14 @@ class NovaSonicSession:
                 "sampleSizeBits": 16, "channelCount": 1,
                 "audioType": "SPEECH", "encoding": "base64"}}}})
 
-        # Send 500ms of silence immediately so Nova doesn't time out while the
-        # browser is setting up the mic worklet (getUserMedia + worklet compile
-        # typically takes 500ms–1s on the first connection).
-        silence = b"\x00" * (16000 * 2 // 2)  # 500ms @ 16kHz 16-bit mono
+        # Send 3s of silence so Nova stays alive while the browser finishes
+        # getUserMedia + worklet setup (can take 1–3s on first connection).
+        silence = b"\x00" * (16000 * 2 * 3)  # 3s @ 16kHz 16-bit mono
         await self._send({"event": {"audioInput": {
             "promptName": self._prompt_name,
             "contentName": self._audio_content,
             "content": base64.b64encode(silence).decode("utf-8")}}})
+        print("Nova: sent 3s silence keepalive", flush=True)
 
         self._reader_task = asyncio.create_task(self._read_loop())
         logger.info("Nova Sonic session started voice=%s region=%s",

@@ -109,6 +109,7 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
         send_lock = asyncio.Lock()
         persist_lock = asyncio.Lock()
         stop = asyncio.Event()
+        _mic_frame_count = 0
         # Accumulates assistant text for the current turn so we persist one
         # client message per turn (matching the cascade's behavior).
         assistant_buf = {"text": "", "started": False}
@@ -213,6 +214,9 @@ async def handle_nova_session(websocket: WebSocket, session_id: str, token: str)
                 if evt.get("type") == "websocket.disconnect":
                     break
                 if evt.get("bytes") is not None:
+                    _mic_frame_count += 1
+                    if _mic_frame_count <= 3 or _mic_frame_count % 100 == 0:
+                        print(f"Nova recv mic frame #{_mic_frame_count} len={len(evt['bytes'])}", flush=True)
                     await nova_sess.send_audio(evt["bytes"])
                 elif evt.get("text") is not None:
                     # Only an explicit end control message ends the session.
