@@ -99,14 +99,24 @@ function ClientAvatar({
  * by the Nova Sonic 24kHz playback path.
  */
 let _sharedAudioCtx: AudioContext | null = null;
+// Mixer destination — mic + Nova playback are both routed here so the
+// MediaRecorder captures the full two-way conversation audio.
+let _mixerDest: MediaStreamAudioDestinationNode | null = null;
+
 function getSharedAudioContext(): AudioContext {
   if (!_sharedAudioCtx || _sharedAudioCtx.state === 'closed') {
     _sharedAudioCtx = new AudioContext();
+    _mixerDest = _sharedAudioCtx.createMediaStreamDestination();
   }
   if (_sharedAudioCtx.state === 'suspended') {
     _sharedAudioCtx.resume().catch(() => { /* logged below */ });
   }
   return _sharedAudioCtx;
+}
+
+function getMixerDest(): MediaStreamAudioDestinationNode | null {
+  if (!_mixerDest) getSharedAudioContext();
+  return _mixerDest;
 }
 
 /**
@@ -153,6 +163,8 @@ class StreamingPCMPlayer {
     const source = this.ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(this.ctx.destination);
+    const mixer = getMixerDest();
+    if (mixer) source.connect(mixer);
     const startTime = Math.max(this.ctx.currentTime + 0.05, this.nextStartTime);
     source.start(startTime);
     this.scheduledNodes.push(source);
@@ -174,6 +186,7 @@ async function closeSharedAudioContext(): Promise<void> {
   if (_sharedAudioCtx && _sharedAudioCtx.state !== 'closed') {
     try { await _sharedAudioCtx.close(); } catch { /* already closed */ }
   }
+  _mixerDest = null;
   _sharedAudioCtx = null;
 }
 
@@ -344,6 +357,10 @@ export default function Session() {
   // getUserMedia calls so a failure in one doesn't kill the other. Recording
   // runs in BOTH modes and is independent of any WebSocket.
   const startRecording = useCallback(async () => {
+    // Ensure the shared AudioContext + mixer exist before recording starts so
+    // Nova playback (which connects to the mixer later) is captured too.
+    getSharedAudioContext();
+
     const pinnedId = preferredDeviceIdRef.current;
     const audioConstraint = pinnedId
       ? ({ deviceId: { exact: pinnedId } } as MediaTrackConstraints)
@@ -401,12 +418,29 @@ export default function Session() {
       return;
     }
 
+    // Route mic through the shared mixer so Nova playback is also captured.
+    // The mixer's single output track contains both sides of the conversation.
+    let mixedAudioTrack: MediaStreamTrack | null = null;
+    if (audioTrack) {
+      try {
+        const ctx = getSharedAudioContext();
+        const micSrc = ctx.createMediaStreamSource(new MediaStream([audioTrack]));
+        const mixer = getMixerDest()!;
+        micSrc.connect(mixer);
+        mixedAudioTrack = mixer.stream.getAudioTracks()[0] ?? null;
+      } catch {
+        mixedAudioTrack = audioTrack; // fallback to raw mic
+      }
+    }
+
+    // mediaStreamRef holds the raw mic track for the Nova PCM worklet.
+    mediaStreamRef.current = new MediaStream(audioTrack ? [audioTrack] : []);
+
     const combined = new MediaStream();
-    if (audioTrack) combined.addTrack(audioTrack);
+    if (mixedAudioTrack) combined.addTrack(mixedAudioTrack);
     if (videoTrack) combined.addTrack(videoTrack);
-    mediaStreamRef.current = combined;
     setIsVideoRecording(!!videoTrack);
-    setHasAudioTrack(!!audioTrack);
+    setHasAudioTrack(!!mixedAudioTrack);
 
     if (videoTrack && !audioTrack) {
       toast.error('Microphone not available — recording will have video but NO audio. Check browser mic permissions and click Retry mic.');
